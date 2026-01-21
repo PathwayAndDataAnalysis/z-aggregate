@@ -1,0 +1,17 @@
+{
+    "output_dir": "simulated_data/",
+    "output_exp_file": "simulated_scRNASeq_data.tsv",
+    "output_prior_file": "simulated_prior_data.tsv",
+    "output_ground_truth_file": "simulated_ground_truth.tsv",
+    "n_cells": 1000,
+    "n_genes": 1000,
+    "n_tfs": 100,
+    "ground_truth_active_inactive_prob": 0.1,
+    "overlap_alpha_factor": 0,
+    "average_number_of_targets_per_tf": 30,
+    "include_tfs_in_expression": false,
+    "tf_effect_factor": 1,
+    "missing_percentage": 70,
+    "weighted": false,
+    "random_seed": 42
+}
