@@ -33,12 +33,19 @@ def main():
         default=WeightType.UNIFORM.value,
         help="Weighting strategy",
     )
-    parser.add_argument("--output-format", choices=["tsv", "h5ad", "both"], default="both", help="Output file format")
+    parser.add_argument("--output-format", choices=["tsv", "csv", "h5ad", "both"], default="both", help="Output file format")
     parser.add_argument("-v", "--verbose", action="store_true", help="Increase output verbosity")
 
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s: %(message)s")
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
+    logging.getLogger("h5py").setLevel(logging.WARNING)
+    logging.getLogger("numba").setLevel(logging.WARNING)
 
     # 1. Load Data
     adata = read_adata_file(args.dataset)
@@ -53,21 +60,51 @@ def main():
 
     # 4. Run Algorithm
     scores, pvalues = run_z_aggregate(adata, priors, min_targets=args.min_targets)
+    scores.sort_index(axis=1, inplace=True)
+    pvalues.sort_index(axis=1, inplace=True)
 
     # 5. Save Results
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    scores.to_csv(out_dir / "z_aggregate_scores.tsv", sep="\t")
-    pvalues.to_csv(out_dir / "z_aggregate_pvalues.tsv", sep="\t")
+    result_prefix = Path(args.dataset).stem
+
+    if args.output_format in ("tsv", "csv", "both"):
+
+        format_to_write = "tsv" if args.output_format == "both" else [args.output_format]
+        sep = "\t" if format_to_write == "tsv" else ","
+
+        scores_file_name = out_dir / f"{result_prefix}_z_aggregate_scores.{format_to_write}"
+        pvalues_file_name = out_dir / f"{result_prefix}_z_aggregate_pvalues.{format_to_write}"
+
+        scores.to_csv(scores_file_name, sep=sep)
+        pvalues.to_csv(pvalues_file_name, sep=sep)
+
+        logging.info(
+            f"Saved z-aggregate scores (cells={scores.shape[0]}, TFs={scores.shape[1]}) "
+            f"to {scores_file_name}"
+        )
+        logging.info(
+            f"Saved z-aggregate p-values (cells={pvalues.shape[0]}, TFs={pvalues.shape[1]}) "
+            f"to {pvalues_file_name}"
+        )
 
     if args.output_format in ("h5ad", "both"):
         adata_out = adata.copy()
-        adata_out.obsm["z_aggregate_scores"] = scores
-        adata_out.obsm["z_aggregate_pvalues"] = pvalues
-        adata_out.write_h5ad(out_dir / "z_aggregate_results.h5ad")
-        logging.info(f"Results saved to {out_dir}")
 
+        score_key = "z_aggregate_scores"
+        pval_key = "z_aggregate_pvalues"
+
+        adata_out.obsm[score_key] = scores
+        adata_out.obsm[pval_key] = pvalues
+
+        h5ad_filename = out_dir / f"{result_prefix}_z_aggregate_results.h5ad"
+        adata_out.write_h5ad(h5ad_filename)
+
+        logging.info(
+            f"Saved AnnData object to {h5ad_filename}. "
+            f"Added .obsm keys: '{score_key}', '{pval_key}'"
+        )
 
 if __name__ == "__main__":
     main()

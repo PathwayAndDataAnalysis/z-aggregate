@@ -1,12 +1,10 @@
 import os
-import numpy as np
 import pandas as pd
 import scanpy as sc
 from anndata import AnnData
-from scipy.sparse import csr_matrix, issparse
-from scipy.special import ndtr
-from sklearn.utils.sparsefuncs import mean_variance_axis, inplace_csr_row_scale
+from scipy.sparse import  issparse
 import logging
+import re
 from tqdm import tqdm
 from .WeightType import WeightType
 
@@ -225,3 +223,35 @@ def compute_network_weights(
     net = net[["source", "interaction", "target", "weight"]].fillna(0.0)
     logger.info("   Weights computed successfully.")
     return net
+
+
+def get_single_perturbation(label):
+    if pd.isna(label) or str(label).lower() == "nan":
+        return "control"
+    label = str(label)
+    ctrl_terms = ["control", "ctrl", "negctrl", "non-targeting", "neg", "nt"]
+
+    def is_ctrl(s):
+        return any(t in s.lower() for t in ctrl_terms)
+
+    if "_" in label:
+        parts = label.split("_")
+        if len(parts) == 2:
+            p1, p2 = parts
+            is_guide_id = p2.isdigit() or bool(re.match(r"^g\d+$", p2))
+            if not is_guide_id:
+                p1_c = is_ctrl(p1)
+                p2_c = is_ctrl(p2)
+                if p1_c and p2_c:
+                    return "control"
+                if p1_c:
+                    return p2
+                if p2_c:
+                    return p1
+                if p1 != p2:
+                    return None
+        base = parts[0]
+    else:
+        base = label
+    base = re.sub(r"g\d+$", "", base)
+    return base

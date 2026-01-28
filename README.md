@@ -69,7 +69,7 @@ uv run z-aggregate \
   --dataset ./data/sc_counts.h5ad \
   --priors ./data/causal-priors.tsv \
   --output ./results \
-  --weight-type Correlation_Weight \
+  --weight-type Correlation \
   --verbose
 ```
 
@@ -96,11 +96,11 @@ uv run z-aggregate \
 ### Weight Types
 You can adjust how the algorithm weights the edges between TFs and Target Genes using `--weight-type`:
 
-*   `Uniform_Weight`: Technically no weights. This treats upregulates-expression as `1`, and downregulates-expression as `-1`.
-*   `Correlation_Weight`: Weights are scaled by the Spearman correlation between TF and Target expression.
-*   `Specificity_Weight`: Weights are scaled by `1 / (Number of TFs regulating that gene)`.
-*   `Non_Zero_Rate_Weight`: Weights are scaled by the detection rate of the target gene.
-*   `Existing_Weight`: Uses the weight column provided in the input prior file.
+*   `Uniform`: Technically no weights. This treats upregulates-expression as `1`, and downregulates-expression as `-1`.
+*   `Correlation`: Weights are scaled by the Spearman correlation between TF and Target expression.
+*   `Specificity`: Weights are scaled by `1 / (Number of TFs regulating that gene)`.
+*   `NonzeroRate`: Weights are scaled by the detection rate of the target gene.
+*   `Existing`: Uses the weight column provided in the input prior file.
 
 ---
 
@@ -127,6 +127,6 @@ A CSV or TSV file containing TF-Target interactions.
 
 The tool generates the following files in the specified output directory:
 
-1.  **`z_aggregate_scores.tsv`**: Matrix of inferred TF activities (Cells x TFs).
-2.  **`z_aggregate_pvalues.tsv`**: Significance values for the activities.
-3.  **`z_aggregate_results.h5ad`** (Optional): A copy of the input Anndata object containing the results in `obsm`.
+1.  **`<dataset-file-name>_z_aggregate_scores.tsv`**: Matrix of inferred TF activities (Cells x TFs).
+2.  **`<dataset-file-name>_z_aggregate_pvalues.tsv`**: Significance values for the activities.
+3.  **`<dataset-file-name>_z_aggregate_results.h5ad`** (Optional): A copy of the input Anndata object containing the results in `obsm`.

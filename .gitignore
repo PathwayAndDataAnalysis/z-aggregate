@@ -7,6 +7,13 @@ __pycache__/
 .idea/
 result/
 *.h5ad
+*.feather
+*.parquet
+reproduce/scRNASeq_results_reproduce/mann_whitney/*
+reproduce/scRNASeq_results_reproduce/results/*
+simulated_results_reproduce/results/*
+simulated_results_reproduce/simulated_data/*
+
 
 # C extensions
 *.so
