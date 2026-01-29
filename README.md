@@ -69,10 +69,27 @@ uv run z-aggregate \
   --dataset ./data/sc_counts.h5ad \
   --priors ./data/causal-priors.tsv \
   --output ./results \
-  --weight-type Correlation \
+  --weight-type Uniform \
   --verbose
 ```
 
+### Example Run
+To run z-aggregate we need a single-cell expression dataset and a prior network file (this is already provided in the repository in `data/causal-priors.tsv`).
+
+To test the application, let's download a sample dataset from scPerturb [here](https://zenodo.org/records/7041849/files/TianKampmann2021_CRISPRi.h5ad?download=1) (e.g., `TianKampmann2021_CRISPRi.h5ad`), and then run the following command:
+
+```bash
+!wget "https://zenodo.org/records/7041849/files/TianKampmann2021_CRISPRi.h5ad?download=1" -O data/TianKampmann2021_CRISPRi.h5ad
+```
+
+```bash
+uv run z-aggregate \
+  --dataset ./data/TianKampmann2021_CRISPRi.h5ad \
+  --priors ./data/causal-priors.tsv \
+  --output ./results \
+  --weight-type Uniform \
+  --verbose
+```
 ---
 
 ## Parameter Reference
@@ -80,7 +97,7 @@ uv run z-aggregate \
 | Flag | Long Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **-ds** | `--dataset` | Path | **Required** | Path to expression data. Supports `.h5ad`, `.csv`, `.tsv`, `.txt`. |
-| **-p** | `--priors` | Path | **Required** | Path to the prior network file (TF-Target interactions). |
+| **-p** | `--priors` | Path | **Required/Provided** | Path to the prior network file (TF-Target interactions). We have provided Pathway Commons priors in `data/causal-priors.tsv`. So you can just use that as `--priors ./data/causal-priors.tsv` |
 | **-o** | `--output` | Path | **Required** | Directory where results will be saved. |
 | **-v** | `--verbose` | Flag | `False` | Enable detailed logging output. |
 | | `--min-targets` | Int | `5` | Minimum number of target genes required per TF to be included. |
@@ -96,8 +113,8 @@ uv run z-aggregate \
 ### Weight Types
 You can adjust how the algorithm weights the edges between TFs and Target Genes using `--weight-type`:
 
-*   `Uniform`: Technically no weights. This treats upregulates-expression as `1`, and downregulates-expression as `-1`.
-*   `Correlation`: Weights are scaled by the Spearman correlation between TF and Target expression.
+*   `Uniform`: No weights.
+*   `Correlation`: Weights are scaled by the Spearman Correlation between TF and Target Genes. The interaction/direction (i.e. `upregulates-expression` or `downregulates-expression`) in priors is replaced by the sign of the correlation.
 *   `Specificity`: Weights are scaled by `1 / (Number of TFs regulating that gene)`.
 *   `NonzeroRate`: Weights are scaled by the detection rate of the target gene.
 *   `Existing`: Uses the weight column provided in the input prior file.
@@ -107,8 +124,8 @@ You can adjust how the algorithm weights the edges between TFs and Target Genes 
 ## Input File Formats
 
 ### 1. Expression Data (`--dataset`)
-*   **Formats:** `.h5ad` (Anndata), `.csv` (comma-separated), `.tsv` (tab-separated).
-*   **Structure:** If text-based, rows should be **Cells** and columns **Genes** (the tool will transpose automatically), or standard Anndata structure.
+*   **Formats:** `.h5ad` (Anndata), `.csv` (comma-separated), `.tsv` (tab-separated). While using `csv` or `tsv`, ensure the that it is in the Cells x Genes format, which is rows as Cells and columns as Genes.
+*   **Structure:** If text-based, rows should be **Cells** and columns **Genes**, or standard Anndata structure.
 
 ### 2. Prior Network (`--priors`)
 A CSV or TSV file containing TF-Target interactions.
@@ -116,10 +133,11 @@ A CSV or TSV file containing TF-Target interactions.
 *   **Optional:** `weight`.
 *   **Example:**
     ```csv
-    source,interaction,target
-    TF_A,1,Gene_X
-    TF_B,-1,Gene_Y
+    source  interaction  target
+    TF_A  upregulates-expression Gene_X 
+    TF_B  downregulates-expression  Gene_Y
     ```
+    | Note: This is a tab-separated file. 
 
 ---
 
@@ -130,3 +148,11 @@ The tool generates the following files in the specified output directory:
 1.  **`<dataset-file-name>_z_aggregate_scores.tsv`**: Matrix of inferred TF activities (Cells x TFs).
 2.  **`<dataset-file-name>_z_aggregate_pvalues.tsv`**: Significance values for the activities.
 3.  **`<dataset-file-name>_z_aggregate_results.h5ad`** (Optional): A copy of the input Anndata object containing the results in `obsm`.
+
+
+---
+
+## Reproduce the results from the paper
+1. Please refer to the [reproduce/README.md](reproduce/README.md) file for detailed instructions on how to replicate the results presented in the original publication. Or directly go to the notebook [reproduce/scRNASeq_results_reproduce/notebook.ipynb](reproduce/scRNASeq_results_reproduce/notebook.ipynb) to reproduce the scRNA-Seq results.
+
+2. To reproduce the simulated results, please to the notebook [reproduce/simulated_results_reproduce/notebook.ipynb](reproduce/simulated_results_reproduce/notebook.ipynb).
