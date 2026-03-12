@@ -10,7 +10,9 @@ from sklearn.utils.sparsefuncs import mean_variance_axis, inplace_csr_row_scale
 logger = logging.getLogger(__name__)
 
 
-def run_z_aggregate(adata, priors: pd.DataFrame, min_targets: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_z_aggregate(
+    adata, priors: pd.DataFrame, min_targets: int
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     X = adata.X
     if issparse(X):
         mean, var = mean_variance_axis(X, axis=0)
@@ -43,7 +45,11 @@ def run_z_aggregate(adata, priors: pd.DataFrame, min_targets: int) -> tuple[pd.D
     directions = priors_filtered["interaction"].values[valid_mask]
     data_val = raw_weights * directions
 
-    W = csr_matrix((data_val, (row_ind, col_ind)), shape=(len(adata.var_names), len(valid_tfs)), dtype=np.float64)
+    W = csr_matrix(
+        (data_val, (row_ind, col_ind)),
+        shape=(len(adata.var_names), len(valid_tfs)),
+        dtype=np.float64,
+    )
 
     # Z-Score Calculation
     inv_std = (1.0 / std).astype(np.float64)

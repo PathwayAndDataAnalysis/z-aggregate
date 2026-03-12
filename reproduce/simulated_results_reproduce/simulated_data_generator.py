@@ -7,12 +7,12 @@ import secrets
 
 
 def generate_prior_poisson(
-        n_genes: int,
-        n_tfs: int,
-        lambda_param: float,
-        overlap_alpha_factor: int,
-        weighted: bool = True,
-        random_seed: int = None,
+    n_genes: int,
+    n_tfs: int,
+    lambda_param: float,
+    overlap_alpha_factor: int,
+    weighted: bool = True,
+    random_seed: int = None,
 ) -> pd.DataFrame:
     print("Generating prior data (Poisson targets)...")
 
@@ -51,7 +51,7 @@ def generate_prior_poisson(
             n_down = n_genes - n_up
 
         up_idx = perm[:n_up]
-        down_idx = perm[n_up: n_up + n_down]
+        down_idx = perm[n_up : n_up + n_down]
 
         if n_up:
             rows_tf.extend([tf] * n_up)
@@ -62,7 +62,9 @@ def generate_prior_poisson(
             rows_target.extend(genes.take(down_idx))
             rows_interaction.extend([-1] * n_down)  # -1 represents downregulation
 
-    df = pd.DataFrame({"source": rows_tf, "target": rows_target, "interaction": rows_interaction})
+    df = pd.DataFrame(
+        {"source": rows_tf, "target": rows_target, "interaction": rows_interaction}
+    )
 
     # 2. Handle Overlap Logic (Rebuilds the network structure if alpha > 0)
     if overlap_alpha_factor > 0:
@@ -75,10 +77,12 @@ def generate_prior_poisson(
             prior_grouped = df.groupby("source").size().to_dict()
 
             for i in range(0, len(unique_tfs), group_size):
-                current_tfs = unique_tfs[i: i + group_size]
+                current_tfs = unique_tfs[i : i + group_size]
 
                 # Pool all targets from this group of TFs
-                current_targets = df[df["source"].isin(current_tfs)]["target"].unique().tolist()
+                current_targets = (
+                    df[df["source"].isin(current_tfs)]["target"].unique().tolist()
+                )
 
                 # Assign random direction (+1/-1) to the pooled targets
                 targets_directions = rng.choice([1, -1], size=len(current_targets))
@@ -92,7 +96,7 @@ def generate_prior_poisson(
 
                     mean = (current_targets_len - 1) / 2
                     std = current_targets_len / (
-                            len(current_tfs) * overlap_alpha_factor
+                        len(current_tfs) * overlap_alpha_factor
                     )
 
                     # Re-sample targets based on Normal distribution to create hubs
@@ -121,7 +125,9 @@ def generate_prior_poisson(
 
     # 3. Clean duplicates based on topology (Source + Target)
     # We prioritize keeping the first occurrence before assigning weights
-    df = df.drop_duplicates(subset=["source", "target"], keep="first").reset_index(drop=True)
+    df = df.drop_duplicates(subset=["source", "target"], keep="first").reset_index(
+        drop=True
+    )
 
     # 4. Generate Random Weights (0-1)
     if weighted:
@@ -216,7 +222,9 @@ def generate_gene_expression_neg_binomial(
     theta = 5  # dispersion parameter
     gamma_shape = theta
     gamma_scale = gene_prop / theta
-    rate_per_gene = rng.gamma(shape=gamma_shape, scale=gamma_scale, size=(n_cells, n_genes))
+    rate_per_gene = rng.gamma(
+        shape=gamma_shape, scale=gamma_scale, size=(n_cells, n_genes)
+    )
 
     # 3) Build TF-target mappings (storing both Index and Weight)
     gene_index_map = {g: i for i, g in enumerate(gene_names)}
@@ -303,7 +311,9 @@ def generate_gene_expression_neg_binomial(
     # 8) Dropout (zero-inflation)
     n_zeros = np.sum(expr_counts == 0)
     current_missing_ratio = n_zeros / expr_counts.size
-    print(f"Zero percentage before explicit dropout: {100.0 * current_missing_ratio:.2f}%")
+    print(
+        f"Zero percentage before explicit dropout: {100.0 * current_missing_ratio:.2f}%"
+    )
 
     # Repeat until a desired missing ratio is achieved
     # if missing_ratio > current_missing_ratio:
@@ -321,13 +331,17 @@ def generate_gene_expression_neg_binomial(
     # 9) Include TFs as expression features (optional)
     if include_tfs_in_expression:
         tf_names_arr = np.array(tf_names, dtype=object)
-        tf_baseline = rng.lognormal(mean=1.0, sigma=0.75, size=(n_cells, len(tf_names_arr)))
+        tf_baseline = rng.lognormal(
+            mean=1.0, sigma=0.75, size=(n_cells, len(tf_names_arr))
+        )
 
         # Simple dropout for TFs
         tf_drop = rng.random(size=tf_baseline.shape) < 0.5
         tf_baseline = tf_baseline * (~tf_drop)
 
-        tf_df = pd.DataFrame(tf_baseline.astype(np.int64), index=cell_ids, columns=tf_names_arr)
+        tf_df = pd.DataFrame(
+            tf_baseline.astype(np.int64), index=cell_ids, columns=tf_names_arr
+        )
         expr = pd.concat([expr, tf_df], axis=1)
 
     return expr
@@ -335,7 +349,9 @@ def generate_gene_expression_neg_binomial(
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: uv run src/sim_data_generator_optimized.py simulated_data/parameters.json")
+        print(
+            "Usage: uv run src/sim_data_generator_optimized.py simulated_data/parameters.json"
+        )
         sys.exit(1)
 
     param_file = sys.argv[1]
@@ -346,7 +362,7 @@ if __name__ == "__main__":
         print(params)
 
     if not params.get("random_seed"):
-        rand_seed = secrets.randbelow(2 ** 32)
+        rand_seed = secrets.randbelow(2**32)
         params["random_seed"] = rand_seed
 
     # ------------------------------------------
@@ -385,7 +401,6 @@ if __name__ == "__main__":
         ground_truth_dfs=ground_truth_df,
     )
 
-
     prior_df["interaction"] = prior_df["interaction"].map(
         {1: "upregulates-expression", -1: "downregulates-expression"}
     )
@@ -405,5 +420,7 @@ if __name__ == "__main__":
     )
     print(f"Wrote ground truth to {params['output_ground_truth_file']}")
 
-    gene_exp.to_csv(f"{params['output_dir']}/{params['output_exp_file']}", sep="\t", index=True)
+    gene_exp.to_csv(
+        f"{params['output_dir']}/{params['output_exp_file']}", sep="\t", index=True
+    )
     print(f"Wrote gene expression to {params['output_exp_file']}")

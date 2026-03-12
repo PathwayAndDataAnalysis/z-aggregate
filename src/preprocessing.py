@@ -1,10 +1,12 @@
 import os
+import numpy as np
 import pandas as pd
 import scanpy as sc
 from anndata import AnnData
-from scipy.sparse import  issparse
+from scipy.sparse import issparse
 import logging
 import re
+import decoupler as dc
 from tqdm import tqdm
 from .WeightType import WeightType
 
@@ -43,106 +45,107 @@ def read_adata_file(gene_exp_file: str) -> AnnData:
     return adata
 
 
-def preprocess_adata(adata: AnnData, min_genes=1000, min_cells=10, max_mt_pct=20.0) -> AnnData:
+def preprocess_adata(
+    adata: AnnData, min_genes=1000, min_cells=10, max_mt_pct=20.0
+) -> AnnData:
     logger.info("Starting Preprocessing...")
     n_cells_init, n_genes_init = adata.shape
 
     # Filter Cells
     sc.pp.filter_cells(adata, min_genes=min_genes)
     n_cells_step1 = adata.n_obs
-    logger.info(f"   Filtered cells (min_genes={min_genes}): Removed {n_cells_init - n_cells_step1} cells.")
+    logger.info(
+        f"   Filtered cells (min_genes={min_genes}): Removed {n_cells_init - n_cells_step1} cells."
+    )
 
     # Filter Genes
     sc.pp.filter_genes(adata, min_cells=min_cells)
     n_genes_step1 = adata.n_vars
-    logger.info(f"   Filtered genes (min_cells={min_cells}): Removed {n_genes_init - n_genes_step1} genes.")
+    logger.info(
+        f"   Filtered genes (min_cells={min_cells}): Removed {n_genes_init - n_genes_step1} genes."
+    )
 
     # Mito Filter
     adata.var["mt"] = adata.var_names.str.startswith(("MT-", "mt-"))
-    sc.pp.calculate_qc_metrics(adata, qc_vars=["mt"], percent_top=None, log1p=False, inplace=True)
+    sc.pp.calculate_qc_metrics(
+        adata, qc_vars=["mt"], percent_top=None, log1p=False, inplace=True
+    )
 
     n_cells_pre_mt = adata.n_obs
     adata = adata[adata.obs["pct_counts_mt"] < max_mt_pct, :].copy()
     n_cells_post_mt = adata.n_obs
 
-    logger.info(f"   Mitochondrial filter (<{max_mt_pct}%): Removed {n_cells_pre_mt - n_cells_post_mt} cells.")
+    logger.info(
+        f"   Mitochondrial filter (<{max_mt_pct}%): Removed {n_cells_pre_mt - n_cells_post_mt} cells."
+    )
 
     # Normalize & Log
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
 
-    logger.info(f"Preprocessing complete. Final shape: {adata.n_obs} cells x {adata.n_vars} genes")
+    logger.info(
+        f"Preprocessing complete. Final shape: {adata.n_obs} cells x {adata.n_vars} genes"
+    )
     return adata
 
 
-def read_prior_network_file(prior_file: str) -> pd.DataFrame:
-    logger.info(f"Loading prior network from: {prior_file}")
-    if not os.path.exists(prior_file):
-        raise FileNotFoundError(f"File not found: {prior_file}")
+def read_prior_network_file(prior_type: str) -> pd.DataFrame:
+    logger.info(f"Reading prior network for type: {prior_type}")
 
-    _, ext = os.path.splitext(prior_file)
-    sep = "\t" if ext.lower() in [".tsv", ".txt"] else ","
-
-    try:
-        df_raw = pd.read_csv(prior_file, sep=sep, header=None)
-    except pd.errors.EmptyDataError:
-        logger.error("Prior network file is empty.")
-        return pd.DataFrame(columns=["source", "interaction", "target", "weight"])
-
-    col_mappings = {
-        "source": ["source", "tf", "regulator"],
-        "interaction": ["interaction", "mor", "mode", "regulatory_effect", "direction"],
-        "target": ["target", "gene", "target_gene"],
-        "weight": ["weight", "score", "confidence", "likelihood"],
-    }
-    all_keywords = {alias for aliases in col_mappings.values() for alias in aliases}
-
-    first_row = df_raw.iloc[0].astype(str).str.lower().str.strip().tolist()
-    has_header = any(val in all_keywords for val in first_row)
-
-    if has_header:
-        df = pd.read_csv(prior_file, sep=sep, header=0)
-        df.columns = df.columns.str.lower().str.strip()
+    if prior_type == "pathway-commons":
+        prior_file = "./data/causal-priors.tsv"
+        df = pd.read_csv(
+            prior_file,
+            sep="\t",
+            header=None,
+            names=["source", "interaction", "target"],
+        )
+    
+    elif prior_type == "collectri":
+        collectri = dc.op.collectri(organism="human", license="academic")
+        df = collectri[["source", "target", "weight"]].copy()
+        df = df[~df["target"].str.startswith("hsa-", na=False)]
+        df.rename(columns={"weight": "interaction"}, inplace=True)
+    
+    elif prior_type == "dorothea":
+        dorothea = dc.op.dorothea(organism="human", license="academic")
+        df = dorothea[["source", "target", "weight"]].copy()
+        df.rename(columns={"weight": "interaction"}, inplace=True)
+    
     else:
-        logger.debug("No header detected in network file. Inferring columns based on width.")
-        df = df_raw
-        width = df.shape[1]
-        if width == 3:
-            df.columns = ["source", "interaction", "target"]
-        elif width == 4:
-            df.columns = ["source", "interaction", "target", "weight"]
-        else:
-            raise ValueError(f"Unexpected column count: {width}. Expected 3 or 4.")
+        raise ValueError(f"Unsupported prior type: {prior_type}")
 
-    rename_map = {}
-    for standard, aliases in col_mappings.items():
-        for alias in aliases:
-            rename_map[alias] = standard
-    df = df.rename(columns=rename_map)
+    interaction_map = {
+        "upregulates-expression": 1,
+        "downregulates-expression": -1,
+        "up": 1,
+        "down": -1,
+    }
 
-    required = {"source", "interaction", "target"}
-    if not required.issubset(df.columns):
-        if len(df.columns) == 3:
-            df.columns = ["source", "interaction", "target"]
-        elif len(df.columns) == 4:
-            df.columns = ["source", "interaction", "target", "weight"]
-        else:
-            raise ValueError(f"Mapping failed. Columns: {list(df.columns)}")
+    col = df["interaction"]
+    # handle strings
+    if col.dtype == "object":
+        col = col.astype(str).str.lower().str.strip()
+        col = col.replace(interaction_map)
 
-    # 6. Normalize Interaction values
-    interaction_map = {"upregulates-expression": 1, "downregulates-expression": -1}
+    # convert to numeric
+    col = pd.to_numeric(col, errors="coerce")
+    col = np.sign(col)
+    col = col.replace(0, np.nan)
+    df["interaction"] = col.astype("Int64")
+    df = df[["source", "interaction", "target"]]
+    df = df.dropna(subset=["interaction", "source", "target"])
+    logger.info(
+        f"   Loaded {len(df)} interactions. " f"Unique TFs: {df['source'].nunique()}"
+    )
 
-    if df["interaction"].dtype == "object":
-        df["interaction"] = df["interaction"].str.lower().str.strip()
-        df["interaction"] = df["interaction"].map(interaction_map)
-        df["interaction"] = pd.to_numeric(df["interaction"], errors="coerce")
-
-    logger.info(f"   Loaded {len(df)} interactions. Unique TFs: {df['source'].nunique()}")
     return df
 
 
 def compute_network_weights(
-    adata: AnnData, prior_network: pd.DataFrame, weight_type: WeightType = WeightType.UNIFORM
+    adata: AnnData,
+    prior_network: pd.DataFrame,
+    weight_type: WeightType = WeightType.UNIFORM,
 ) -> pd.DataFrame:
     logger.info(f"Computing weights using strategy: {weight_type.value}")
     initial_edges = len(prior_network)
@@ -156,7 +159,8 @@ def compute_network_weights(
         coverage_pct = 0.0
 
     logger.info(
-        f"   Network Overlap: {final_edges}/{initial_edges} edges ({coverage_pct:.2f}%) target genes present in dataset.")
+        f"   Network Overlap: {final_edges}/{initial_edges} edges ({coverage_pct:.2f}%) target genes present in dataset."
+    )
 
     if net.empty:
         adata_examples = list(adata.var_names[:5])
@@ -181,10 +185,18 @@ def compute_network_weights(
             if tf not in adata.var_names:
                 continue
 
-            tf_vec = adata[:, tf].X.toarray().flatten() if issparse(adata[:, tf].X) else adata[:, tf].X.flatten()
+            tf_vec = (
+                adata[:, tf].X.toarray().flatten()
+                if issparse(adata[:, tf].X)
+                else adata[:, tf].X.flatten()
+            )
             targets = net.loc[net["source"] == tf, "target"].unique()
 
-            target_mat = adata[:, targets].X.toarray() if issparse(adata[:, targets].X) else adata[:, targets].X
+            target_mat = (
+                adata[:, targets].X.toarray()
+                if issparse(adata[:, targets].X)
+                else adata[:, targets].X
+            )
 
             df_temp = pd.DataFrame(target_mat, columns=targets)
             corrs = df_temp.corrwith(pd.Series(tf_vec), method="spearman")
@@ -213,7 +225,9 @@ def compute_network_weights(
 
     elif weight_type == WeightType.EXISTING:
         if "weight" not in net.columns:
-            logger.warning("'weight' column not found in priors. Falling back to Uniform weights.")
+            logger.warning(
+                "'weight' column not found in priors. Falling back to Uniform weights."
+            )
             net["weight"] = 1.0
         else:
             net["weight"] = net["weight"].abs().fillna(1.0)

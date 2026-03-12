@@ -67,7 +67,7 @@ uv run z-aggregate -ds <path_to_data> -p <path_to_network> -o <output_folder>
 ```bash
 uv run z-aggregate \
   --dataset ./data/sc_counts.h5ad \
-  --priors ./data/causal-priors.tsv \
+  --prior-type pathway-commons \
   --output ./results \
   --weight-type Uniform \
   --verbose
@@ -85,19 +85,18 @@ To test the application, let's download a sample dataset from scPerturb [here](h
 ```bash
 uv run z-aggregate \
   --dataset ./data/TianKampmann2021_CRISPRi.h5ad \
-  --priors ./data/causal-priors.tsv \
+  --prior-type pathway-commons \
   --output ./results \
   --weight-type Uniform \
   --verbose
 ```
----
 
 ## Parameter Reference
 
 | Flag | Long Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **-ds** | `--dataset` | Path | **Required** | Path to expression data. Supports `.h5ad`, `.csv`, `.tsv`, `.txt`. |
-| **-p** | `--priors` | Path | **Required/Provided** | Path to the prior network file (TF-Target interactions). We have provided Pathway Commons priors in `data/causal-priors.tsv`. So you can just use that as `--priors ./data/causal-priors.tsv` |
+| **-p** | `--prior-type` | Str | **Required/Provided** | Type of prior network to use. Options: `pathway-commons`, `collectri`, `dorothea`. |
 | **-o** | `--output` | Path | **Required** | Directory where results will be saved. |
 | **-v** | `--verbose` | Flag | `False` | Enable detailed logging output. |
 | | `--min-targets` | Int | `5` | Minimum number of target genes required per TF to be included. |
@@ -127,9 +126,10 @@ You can adjust how the algorithm weights the edges between TFs and Target Genes 
 *   **Formats:** `.h5ad` (Anndata), `.csv` (comma-separated), `.tsv` (tab-separated). While using `csv` or `tsv`, ensure the that it is in the Cells x Genes format, which is rows as Cells and columns as Genes.
 *   **Structure:** If text-based, rows should be **Cells** and columns **Genes**, or standard Anndata structure.
 
-### 2. Prior Network (`--priors`)
+### 2. Prior Network (`--prior-type`)
+*  **Options:** `pathway-commons`, `collectri`, `dorothea`, or a custom file path.
 A CSV or TSV file containing TF-Target interactions.
-*   **Required Columns:** `source` (TF), `interaction` (mode), `target` (Gene).
+<!-- *   **Required Columns:** `source` (TF), `interaction` (mode), `target` (Gene).
 *   **Optional:** `weight`.
 *   **Example:**
     ```csv
@@ -137,7 +137,7 @@ A CSV or TSV file containing TF-Target interactions.
     TF_A  upregulates-expression Gene_X 
     TF_B  downregulates-expression  Gene_Y
     ```
-    | Note: This is a tab-separated file. 
+    | Note: This is a tab-separated file.  -->
 
 ---
 
@@ -145,9 +145,9 @@ A CSV or TSV file containing TF-Target interactions.
 
 The tool generates the following files in the specified output directory:
 
-1.  **`<dataset-file-name>_z_aggregate_scores.tsv`**: Matrix of inferred TF activities (Cells x TFs).
-2.  **`<dataset-file-name>_z_aggregate_pvalues.tsv`**: Significance values for the activities.
-3.  **`<dataset-file-name>_z_aggregate_results.h5ad`** (Optional): A copy of the input Anndata object containing the results in `obsm`.
+1.  **`<dataset-file-name>_pathway-commons_z_agg_scores.tsv`**: Matrix of inferred TF activities (Cells x TFs).
+2.  **`<dataset-file-name>_pathway-commons_z_agg_pvalues.tsv`**: Significance values for the activities.
+3.  **`<dataset-file-name>_pathway-commons_z_agg_results.h5ad`** (Optional): A copy of the input Anndata object containing the results in `obsm`.
 
 
 ---

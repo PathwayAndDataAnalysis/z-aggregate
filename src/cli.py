@@ -12,20 +12,47 @@ from src.z_aggregate import run_z_aggregate
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Z-Aggregate: TF Activity Prediction CLI")
-    parser.add_argument("-ds", "--dataset", required=True, help="Path to expression data (h5ad, csv, txt)")
-    parser.add_argument("-p", "--priors", required=True, help="Path to prior network file")
+    parser = argparse.ArgumentParser(
+        description="Z-Aggregate: TF Activity Prediction CLI"
+    )
+    parser.add_argument(
+        "-ds",
+        "--dataset",
+        required=True,
+        help="Path to expression data (h5ad, csv, txt)",
+    )
+    parser.add_argument(
+        "-p",
+        "--prior-type",
+        required=True,
+        help="Type of prior network (e.g., 'pathway-commons', 'collectri', 'dorothea')",
+    )
     parser.add_argument("-o", "--output", required=True, help="Output directory")
-    parser.add_argument("--min-targets", type=int, default=5, help="Minimum targets per TF")
+    parser.add_argument(
+        "--min-targets", type=int, default=5, help="Minimum targets per TF"
+    )
 
     parser.add_argument(
-        "--preprocess", dest="preprocess", action="store_true", default=True, help="Enable preprocessing"
+        "--preprocess",
+        dest="preprocess",
+        action="store_true",
+        default=True,
+        help="Enable preprocessing",
     )
-    parser.add_argument("--no-preprocess", dest="preprocess", action="store_false", help="Disable preprocessing")
+    parser.add_argument(
+        "--no-preprocess",
+        dest="preprocess",
+        action="store_false",
+        help="Disable preprocessing",
+    )
 
-    parser.add_argument("--min-genes", type=int, default=1000, help="Min genes per cell")
+    parser.add_argument(
+        "--min-genes", type=int, default=1000, help="Min genes per cell"
+    )
     parser.add_argument("--min-cells", type=int, default=10, help="Min cells per gene")
-    parser.add_argument("--max-mt-pct", type=float, default=20.0, help="Max mitochondrial percentage")
+    parser.add_argument(
+        "--max-mt-pct", type=float, default=20.0, help="Max mitochondrial percentage"
+    )
 
     parser.add_argument(
         "--weight-type",
@@ -33,15 +60,22 @@ def main():
         default=WeightType.UNIFORM.value,
         help="Weighting strategy",
     )
-    parser.add_argument("--output-format", choices=["tsv", "csv", "h5ad", "both"], default="both", help="Output file format")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Increase output verbosity")
+    parser.add_argument(
+        "--output-format",
+        choices=["tsv", "csv", "h5ad", "both"],
+        default="both",
+        help="Output file format",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Increase output verbosity"
+    )
 
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
     logging.getLogger("h5py").setLevel(logging.WARNING)
@@ -52,14 +86,21 @@ def main():
 
     # 2. Preprocess
     if args.preprocess:
-        adata = preprocess_adata(adata, min_genes=args.min_genes, min_cells=args.min_cells, max_mt_pct=args.max_mt_pct)
+        adata = preprocess_adata(
+            adata,
+            min_genes=args.min_genes,
+            min_cells=args.min_cells,
+            max_mt_pct=args.max_mt_pct,
+        )
 
     # 3. Load & Weight Network
-    priors = read_prior_network_file(args.priors)
-    priors = compute_network_weights(adata, priors, weight_type=WeightType(args.weight_type))
+    prior_df = read_prior_network_file(args.prior_type)
+    prior_df = compute_network_weights(
+        adata, prior_df, weight_type=WeightType(args.weight_type)
+    )
 
     # 4. Run Algorithm
-    scores, pvalues = run_z_aggregate(adata, priors, min_targets=args.min_targets)
+    scores, pvalues = run_z_aggregate(adata, prior_df, min_targets=args.min_targets)
     scores.sort_index(axis=1, inplace=True)
     pvalues.sort_index(axis=1, inplace=True)
 
@@ -71,11 +112,19 @@ def main():
 
     if args.output_format in ("tsv", "csv", "both"):
 
-        format_to_write = "tsv" if args.output_format == "both" else [args.output_format]
+        format_to_write = (
+            "tsv" if args.output_format == "both" else [args.output_format]
+        )
         sep = "\t" if format_to_write == "tsv" else ","
 
-        scores_file_name = out_dir / f"{result_prefix}_z_aggregate_scores.{format_to_write}"
-        pvalues_file_name = out_dir / f"{result_prefix}_z_aggregate_pvalues.{format_to_write}"
+        scores_file_name = (
+            out_dir
+            / f"{result_prefix}_{args.prior_type}_z_agg_scores.{format_to_write}"
+        )
+        pvalues_file_name = (
+            out_dir
+            / f"{result_prefix}_{args.prior_type}_z_agg_pvalues.{format_to_write}"
+        )
 
         scores.to_csv(scores_file_name, sep=sep)
         pvalues.to_csv(pvalues_file_name, sep=sep)
@@ -92,19 +141,22 @@ def main():
     if args.output_format in ("h5ad", "both"):
         adata_out = adata.copy()
 
-        score_key = "z_aggregate_scores"
-        pval_key = "z_aggregate_pvalues"
+        score_key = "z_agg_scores"
+        pval_key = "z_agg_pvalues"
 
         adata_out.obsm[score_key] = scores
         adata_out.obsm[pval_key] = pvalues
 
-        h5ad_filename = out_dir / f"{result_prefix}_z_aggregate_results.h5ad"
+        h5ad_filename = (
+            out_dir / f"{result_prefix}_{args.prior_type}_z_agg_results.h5ad"
+        )
         adata_out.write_h5ad(h5ad_filename)
 
         logging.info(
             f"Saved AnnData object to {h5ad_filename}. "
             f"Added .obsm keys: '{score_key}', '{pval_key}'"
         )
+
 
 if __name__ == "__main__":
     main()
