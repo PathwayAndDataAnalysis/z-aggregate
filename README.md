@@ -67,7 +67,7 @@ uv run z-aggregate -ds <path_to_data> -p <path_to_network> -o <output_folder>
 ```bash
 uv run z-aggregate \
   --dataset ./data/sc_counts.h5ad \
-  --prior-type pathway-commons \
+  --prior-type causalpath-priors \
   --output ./results \
   --weight-type Uniform \
   --verbose
@@ -85,7 +85,7 @@ To test the application, let's download a sample dataset from scPerturb [here](h
 ```bash
 uv run z-aggregate \
   --dataset ./data/TianKampmann2021_CRISPRi.h5ad \
-  --prior-type pathway-commons \
+  --prior-type causalpath-priors \
   --output ./results \
   --weight-type Uniform \
   --verbose
@@ -96,7 +96,7 @@ uv run z-aggregate \
 | Flag | Long Flag | Type | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **-ds** | `--dataset` | Path | **Required** | Path to expression data. Supports `.h5ad`, `.csv`, `.tsv`, `.txt`. |
-| **-p** | `--prior-type` | Str | **Required/Provided** | Type of prior network to use. Options: `pathway-commons`, `collectri`, `dorothea`. |
+| **-p** | `--prior-type` | Str | **Required/Provided** | Type of prior network to use. Options: `causalpath-priors`, `collectri`, `dorothea`, `ensemble-priors`. |
 | **-o** | `--output` | Path | **Required** | Directory where results will be saved. |
 | **-v** | `--verbose` | Flag | `False` | Enable detailed logging output. |
 | | `--min-targets` | Int | `5` | Minimum number of target genes required per TF to be included. |
@@ -127,7 +127,7 @@ You can adjust how the algorithm weights the edges between TFs and Target Genes 
 *   **Structure:** If text-based, rows should be **Cells** and columns **Genes**, or standard Anndata structure.
 
 ### 2. Prior Network (`--prior-type`)
-*  **Options:** `pathway-commons`, `collectri`, `dorothea`, or a custom file path.
+*  **Options:** `causalpath-priors`, `collectri`, `dorothea`, `ensemble-priors`, or a custom file path.
 A CSV or TSV file containing TF-Target interactions.
 <!-- *   **Required Columns:** `source` (TF), `interaction` (mode), `target` (Gene).
 *   **Optional:** `weight`.

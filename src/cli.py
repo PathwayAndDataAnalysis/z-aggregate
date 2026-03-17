@@ -25,7 +25,7 @@ def main():
         "-p",
         "--prior-type",
         required=True,
-        help="Type of prior network (e.g., 'pathway-commons', 'collectri', 'dorothea')",
+        help="Type of prior network (e.g., 'causalpath-priors', 'collectri', 'dorothea', 'ensemble-priors', or 'file_path')",
     )
     parser.add_argument("-o", "--output", required=True, help="Output directory")
     parser.add_argument(
@@ -109,9 +109,9 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     result_prefix = Path(args.dataset).stem
+    prior_prefix = Path(args.prior_type).stem if args.prior_type not in ("causalpath-priors", "collectri", "dorothea", "ensemble-priors", 'file_path') else args.prior_type
 
     if args.output_format in ("tsv", "csv", "both"):
-
         format_to_write = (
             "tsv" if args.output_format == "both" else [args.output_format]
         )
@@ -119,13 +119,12 @@ def main():
 
         scores_file_name = (
             out_dir
-            / f"{result_prefix}_{args.prior_type}_z_agg_scores.{format_to_write}"
+            / f"{result_prefix}_{prior_prefix}_z_agg_scores.{format_to_write}"
         )
         pvalues_file_name = (
             out_dir
-            / f"{result_prefix}_{args.prior_type}_z_agg_pvalues.{format_to_write}"
+            / f"{result_prefix}_{prior_prefix}_z_agg_pvalues.{format_to_write}"
         )
-
         scores.to_csv(scores_file_name, sep=sep)
         pvalues.to_csv(pvalues_file_name, sep=sep)
 
@@ -148,7 +147,7 @@ def main():
         adata_out.obsm[pval_key] = pvalues
 
         h5ad_filename = (
-            out_dir / f"{result_prefix}_{args.prior_type}_z_agg_results.h5ad"
+            out_dir / f"{result_prefix}_{prior_prefix}_z_agg_results.h5ad"
         )
         adata_out.write_h5ad(h5ad_filename)
 

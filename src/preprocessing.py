@@ -92,7 +92,8 @@ def preprocess_adata(
 def read_prior_network_file(prior_type: str) -> pd.DataFrame:
     logger.info(f"Reading prior network for type: {prior_type}")
 
-    if prior_type == "pathway-commons":
+    # causalpath-priors
+    if prior_type == "causalpath-priors":
         prior_file = "./data/causal-priors.tsv"
         df = pd.read_csv(
             prior_file,
@@ -100,18 +101,42 @@ def read_prior_network_file(prior_type: str) -> pd.DataFrame:
             header=None,
             names=["source", "interaction", "target"],
         )
-    
+
     elif prior_type == "collectri":
         collectri = dc.op.collectri(organism="human", license="academic")
         df = collectri[["source", "target", "weight"]].copy()
         df = df[~df["target"].str.startswith("hsa-", na=False)]
         df.rename(columns={"weight": "interaction"}, inplace=True)
-    
+
     elif prior_type == "dorothea":
         dorothea = dc.op.dorothea(organism="human", license="academic")
         df = dorothea[["source", "target", "weight"]].copy()
         df.rename(columns={"weight": "interaction"}, inplace=True)
+
+    elif prior_type == "ensemble-priors":
+        prior_file = "./data/ensemble-priors.tsv"
+        df = pd.read_csv(
+            prior_file,
+            sep="\t",
+            header=None,
+            names=["source", "interaction", "target"],
+        )
     
+    elif os.path.exists(prior_type):
+        logger.info(f"Reading custom prior network from file: {prior_type}")
+        with open(prior_type, 'r') as f:
+            first_line = f.readline().lower()
+        if "source" in first_line and "target" in first_line:
+            df = pd.read_csv(prior_type, sep="\t")
+            df.columns = df.columns.str.lower()
+        else:
+            df = pd.read_csv(prior_type, sep="\t", header=None)
+            if df.shape[1] == 3:
+                df.columns = ["source", "interaction", "target"]
+            elif df.shape[1] >= 4:
+                df = df.iloc[:, :4]
+                df.columns = ["source", "interaction", "target", "weight"]
+
     else:
         raise ValueError(f"Unsupported prior type: {prior_type}")
 
@@ -133,7 +158,10 @@ def read_prior_network_file(prior_type: str) -> pd.DataFrame:
     col = np.sign(col)
     col = col.replace(0, np.nan)
     df["interaction"] = col.astype("Int64")
-    df = df[["source", "interaction", "target"]]
+    cols_to_keep = ["source", "interaction", "target"]
+    if "weight" in df.columns:
+        cols_to_keep.append("weight")
+    df = df[cols_to_keep]
     df = df.dropna(subset=["interaction", "source", "target"])
     logger.info(
         f"   Loaded {len(df)} interactions. " f"Unique TFs: {df['source'].nunique()}"
@@ -148,6 +176,17 @@ def compute_network_weights(
     weight_type: WeightType = WeightType.UNIFORM,
 ) -> pd.DataFrame:
     logger.info(f"Computing weights using strategy: {weight_type.value}")
+
+    if weight_type == WeightType.UNIFORM:
+        logger.info(
+            "   Uniform weights: using interaction as weight (no overlap filtering)."
+        )
+        net = prior_network.copy()
+        net["weight"] = net["interaction"]
+        net = net[["source", "interaction", "target", "weight"]].fillna(0.0)
+        logger.info("   Weights computed successfully.")
+        return net
+
     initial_edges = len(prior_network)
     mask = prior_network["target"].isin(set(adata.var_names))
     net = prior_network[mask].copy()
@@ -173,10 +212,7 @@ def compute_network_weights(
         )
         raise ValueError(error_msg)
 
-    if weight_type == WeightType.UNIFORM:
-        net["weight"] = net["interaction"]
-
-    elif weight_type == WeightType.CORRELATION:
+    if weight_type == WeightType.CORRELATION:
         logger.info("   Calculating Spearman correlations (TF mRNA vs Target mRNA)...")
         tf_target_corr = {}
         unique_tfs = net["source"].unique()
