@@ -1,158 +1,187 @@
-<div align="center">
-
-# 🧬 z-aggregate
-
+# z-aggregate
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-LGPL_v2.1-blue.svg)](LICENSE)
-[![Code Style](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Dependency Manager](https://img.shields.io/badge/packaging-uv-purple)](https://github.com/astral-sh/uv)
 
-</div>
+`z-aggregate` is a command-line tool for estimating transcription factor
+activities from transcriptomic profiles. It combines an expression matrix with a
+prior regulatory network and reports transcription factor activity scores and
+associated p-values for each cell or sample.
 
----
+The method is intended for single-cell or bulk transcriptomic data where rows are
+observations and columns are genes.
 
+## Installation
 
-***
-
-# z-aggregate
-
-A fast and efficient statistical method for predicting transcription factor activities from transcriptomic profiles using prior knowledge of target genes.
-## Getting Started
-
-Follow these instructions to set up the environment and run the application on your local machine.
-
-### 1. Clone the Repository
-Open your terminal and clone the project repository:
+Clone the repository:
 
 ```bash
 git clone https://github.com/PathwayAndDataAnalysis/z-aggregate
 cd z-aggregate
 ```
 
-### 2. Install `uv` (if not installed)
-This project uses **[uv](https://github.com/astral-sh/uv)** for extremely fast package management and execution.
+Install `uv` if it is not already available:
 
-**macOS / Linux:**
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-**Windows (PowerShell):**
+On Windows PowerShell:
+
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-> *Note: After installation, you may need to restart your terminal.*
-
-### 3. Install Dependencies & Build
-You do not need to manually create virtual environments. Run the following command to sync the project and install all required packages (Scanpy, NumPy, Pandas, etc.) into a managed environment:
+Install the project dependencies:
 
 ```bash
 uv sync
 ```
 
----
+## Quick Start
 
-## How to Run?
-
-To run the application, use `uv run`.
-
-### Basic Syntax
-```bash
-uv run z-aggregate -ds <path_to_data> -p <path_to_network> -o <output_folder>
-```
-
-### Example Usage
-```bash
-uv run z-aggregate \
-  --dataset ./data/sc_counts.h5ad \
-  --prior-type causalpath-priors \
-  --output ./results \
-  --weight-type Uniform \
-  --verbose
-```
-
-### Example Run
-To run z-aggregate we need a single-cell expression dataset and a prior network file (this is already provided in the repository in `data/causal-priors.tsv`).
-
-To test the application, let's download a sample dataset from scPerturb [here](https://zenodo.org/records/7041849/files/TianKampmann2021_CRISPRi.h5ad?download=1) (e.g., `TianKampmann2021_CRISPRi.h5ad`), and then run the following command:
-
-```bash
-!wget "https://zenodo.org/records/7041849/files/TianKampmann2021_CRISPRi.h5ad?download=1" -O data/TianKampmann2021_CRISPRi.h5ad
-```
+Run `z-aggregate` with an expression dataset, a prior network, and an output
+directory:
 
 ```bash
 uv run z-aggregate \
-  --dataset ./data/TianKampmann2021_CRISPRi.h5ad \
-  --prior-type causalpath-priors \
+  --dataset ./dataset/example.h5ad \
+  --prior-type collectri \
+  --output ./results
+```
+
+A fuller example is:
+
+```bash
+uv run z-aggregate \
+  --dataset ./dataset/TianKampmann2021_CRISPRi.h5ad \
+  --prior-type collectri \
   --output ./results \
   --weight-type Uniform \
+  --output-format both \
   --verbose
 ```
 
-## Parameter Reference
+The dataset above can be downloaded from scPerturb:
 
-| Flag | Long Flag | Type | Default | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **-ds** | `--dataset` | Path | **Required** | Path to expression data. Supports `.h5ad`, `.csv`, `.tsv`, `.txt`. |
-| **-p** | `--prior-type` | Str | **Required/Provided** | Type of prior network to use. Options: `causalpath-priors`, `collectri`, `dorothea`, `ensemble-priors`. |
-| **-o** | `--output` | Path | **Required** | Directory where results will be saved. |
-| **-v** | `--verbose` | Flag | `False` | Enable detailed logging output. |
-| | `--min-targets` | Int | `5` | Minimum number of target genes required per TF to be included. |
-| | `--weight-type` | Enum | `Uniform` | Weighting strategy. See **Weight Types** below. |
-| | `--output-format` | Str | `both` | Format of output. Options: `tsv`, `h5ad`, `both`. |
-| **Preprocessing Options** | | | | |
-| | `--preprocess` | Flag | `True` | Enable standard QC and LogNormal preprocessing. |
-| | `--no-preprocess` | Flag | - | Disable preprocessing (use if input is already normalized). |
-| | `--min-genes` | Int | `1000` | Minimum genes per cell (QC). |
-| | `--min-cells` | Int | `10` | Minimum cells per gene (QC). |
-| | `--max-mt-pct` | Float | `20.0` | Maximum mitochondrial percentage allowed (QC). |
+```bash
+mkdir -p dataset
+wget "https://zenodo.org/records/13350497/files/TianKampmann2021_CRISPRi.h5ad?download=1" \
+  -O dataset/TianKampmann2021_CRISPRi.h5ad
+```
 
-### Weight Types
-You can adjust how the algorithm weights the edges between TFs and Target Genes using `--weight-type`:
+## Command-Line Options
 
-*   `Uniform`: No weights.
-*   `Correlation`: Weights are scaled by the Spearman Correlation between TF and Target Genes. The interaction/direction (i.e. `upregulates-expression` or `downregulates-expression`) in priors is replaced by the sign of the correlation.
-*   `Specificity`: Weights are scaled by `1 / (Number of TFs regulating that gene)`.
-*   `NonzeroRate`: Weights are scaled by the detection rate of the target gene.
-*   `Existing`: Uses the weight column provided in the input prior file.
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `-ds`, `--dataset` | Yes | - | Path to the expression dataset. Supported formats are `.h5ad`, `.csv`, `.tsv`, and `.txt`. |
+| `-p`, `--prior-type` | Yes | - | Prior network to use. Use a named prior such as `causalpath-priors`, `collectri`, `dorothea`, or `ensemble-priors`, or provide a custom file path. |
+| `-o`, `--output` | Yes | - | Directory where output files will be written. |
+| `--min-targets` | No | `5` | Minimum number of target genes required for a transcription factor to be included. |
+| `--preprocess` | No | Enabled | Apply standard preprocessing before running the method. |
+| `--no-preprocess` | No | - | Skip preprocessing. Use this when the input data are already filtered and normalized. |
+| `--min-genes` | No | `1000` | Minimum number of genes required per cell during preprocessing. |
+| `--min-cells` | No | `10` | Minimum number of cells required per gene during preprocessing. |
+| `--max-mt-pct` | No | `20.0` | Maximum mitochondrial read percentage allowed during preprocessing. |
+| `--weight-type` | No | `Uniform` | Weighting strategy for prior-network edges. |
+| `--output-format` | No | `both` | Output format: `tsv`, `csv`, `h5ad`, or `both`. With `both`, table files and an AnnData file are written. |
+| `-v`, `--verbose` | No | Disabled | Print more detailed log messages. |
 
----
+## Input Data
 
-## Input File Formats
+### Expression Dataset
 
-### 1. Expression Data (`--dataset`)
-*   **Formats:** `.h5ad` (Anndata), `.csv` (comma-separated), `.tsv` (tab-separated). While using `csv` or `tsv`, ensure the that it is in the Cells x Genes format, which is rows as Cells and columns as Genes.
-*   **Structure:** If text-based, rows should be **Cells** and columns **Genes**, or standard Anndata structure.
+The expression dataset is passed with `--dataset`.
 
-### 2. Prior Network (`--prior-type`)
-*  **Options:** `causalpath-priors`, `collectri`, `dorothea`, `ensemble-priors`, or a custom file path.
-A CSV or TSV file containing TF-Target interactions.
-<!-- *   **Required Columns:** `source` (TF), `interaction` (mode), `target` (Gene).
-*   **Optional:** `weight`.
-*   **Example:**
-    ```csv
-    source  interaction  target
-    TF_A  upregulates-expression Gene_X 
-    TF_B  downregulates-expression  Gene_Y
-    ```
-    | Note: This is a tab-separated file.  -->
+Supported formats:
 
----
+- `.h5ad`: AnnData object.
+- `.csv`: comma-separated matrix.
+- `.tsv` or `.txt`: tab-separated matrix.
+
+For text files, the first column should contain cell or sample identifiers, and
+the remaining columns should be genes. The matrix should be organized as
+observations by genes.
+
+### Prior Network
+
+The prior network is passed with `--prior-type`.
+
+You may use a named prior network:
+
+- `causalpath-priors`
+- `collectri`
+- `dorothea`
+- `ensemble-priors`
+
+You may also provide a path to a custom `.csv`, `.tsv`, or `.txt` file.
+
+A prior network must contain transcription factor-target relationships. The
+standard columns are:
+
+| Column | Meaning |
+| --- | --- |
+| `source` | Transcription factor or regulator. |
+| `interaction` | Direction of regulation. Positive values indicate activation; negative values indicate inhibition. |
+| `target` | Target gene. |
+| `weight` | Optional edge weight. Used when `--weight-type Existing` is selected. |
+
+Common alternative column names such as `tf`, `regulator`, `gene`,
+`target_gene`, `mor`, `mode`, `direction`, `effect`, and `sign` are also
+accepted.
+
+Interaction values may be numeric, or may use terms such as
+`upregulates-expression`, `downregulates-expression`, `activation`, and
+`inhibition`.
+
+## Preprocessing
+
+Preprocessing is enabled by default. It performs:
+
+1. Cell filtering using `--min-genes`.
+2. Gene filtering using `--min-cells`.
+3. Mitochondrial-content filtering using `--max-mt-pct`.
+4. Library-size normalization to a target sum of 10,000.
+5. Log transformation.
+
+Use `--no-preprocess` when the dataset has already been quality controlled,
+normalized, and transformed.
+
+## Weighting Strategies
+
+Choose the edge-weighting method with `--weight-type`.
+
+| Value | Description |
+| --- | --- |
+| `Uniform` | Uses the sign of the prior interaction as the edge weight. |
+| `Correlation` | Uses Spearman correlation between transcription factor expression and target-gene expression. |
+| `Specificity` | Weights each target by `1 / number of TFs regulating that target`. |
+| `NonzeroRate` | Weights each target by its detection rate in the dataset. |
+| `Existing` | Uses the `weight` column from the prior network, if present. |
 
 ## Output Files
 
-The tool generates the following files in the specified output directory:
+Output files are written to the directory given by `--output`.
 
-1.  **`<dataset-file-name>_pathway-commons_z_agg_scores.tsv`**: Matrix of inferred TF activities (Cells x TFs).
-2.  **`<dataset-file-name>_pathway-commons_z_agg_pvalues.tsv`**: Significance values for the activities.
-3.  **`<dataset-file-name>_pathway-commons_z_agg_results.h5ad`** (Optional): A copy of the input Anndata object containing the results in `obsm`.
+For table output, `z-aggregate` writes:
 
+- `<dataset>_<prior>_z_agg_scores.<format>`
+- `<dataset>_<prior>_z_agg_pvalues.<format>`
 
----
+For AnnData output, it writes:
 
-## Reproduce the results from the paper
-1. Please refer to the [reproduce/README.md](reproduce/README.md) file for detailed instructions on how to replicate the results presented in the original publication. Or directly go to the notebook [reproduce/scRNASeq_results_reproduce/notebook.ipynb](reproduce/scRNASeq_results_reproduce/notebook.ipynb) to reproduce the scRNA-Seq results.
+- `<dataset>_z_aggregate_results.h5ad`
 
-2. To reproduce the simulated results, please to the notebook [reproduce/simulated_results_reproduce/notebook.ipynb](reproduce/simulated_results_reproduce/notebook.ipynb).
+The AnnData output contains the activity scores in `.obsm["z_aggregate_scores"]`
+and p-values in `.obsm["z_aggregate_pvalues"]`.
+
+## Reproducing Paper Results
+
+Instructions for reproducing the paper results are provided in
+[reproduce/README.md](reproduce/README.md).
+
+The main reproduction notebooks are:
+
+- [scRNA-seq reproduction guide](<reproduce/Reproduce scRNASeq Results/README.md>)
+- [simulated reproduction guide](<reproduce/Reproduce Simulated Results/README.md>)

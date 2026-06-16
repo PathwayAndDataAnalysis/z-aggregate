@@ -10,40 +10,48 @@ from sklearn.utils.sparsefuncs import mean_variance_axis, inplace_csr_row_scale
 logger = logging.getLogger(__name__)
 
 
-def run_z_aggregate(
-    adata, priors: pd.DataFrame, min_targets: int
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_z_aggregate(adata: AnnData, priors: pd.DataFrame, min_targets: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     X = adata.X
+
     if issparse(X):
         mean, var = mean_variance_axis(X, axis=0)
+        mean = np.asarray(mean).ravel()
+        var = np.asarray(var).ravel()
         std = np.sqrt(var)
     else:
-        mean = np.mean(X, axis=0)
-        std = np.std(X, axis=0)
-    std[std == 0] = 1.0
+        X = np.asarray(X, dtype=np.float64)
+        mean = X.mean(axis=0)
+        std = X.std(axis=0)
 
-    # Validate TFs
-    tf_counts = priors["source"].value_counts()
-    valid_tfs = tf_counts[tf_counts >= min_targets].index
+    std = np.asarray(std, dtype=np.float64).ravel()
+    std = np.maximum(std, 1e-12)
+
+    pri = priors.copy()
+
+    # Keep only genes present in this dataset
+    pri = pri[pri["target"].isin(adata.var_names)].copy()
+
+    pri["interaction"] = pd.to_numeric(pri["interaction"], errors="raise")
+    pri["weight"] = pd.to_numeric(pri["weight"], errors="raise")
+    pri["signed_weight"] = pri["weight"] * pri["interaction"]
+    pri = pri.groupby(["source", "target"], as_index=False)["signed_weight"].sum()
+
+    # Count usable unique targets per TF after dataset intersection
+    tf_counts = pri.groupby("source")["target"].nunique()
+    valid_tfs = tf_counts[tf_counts >= min_targets].index.tolist()
 
     if len(valid_tfs) == 0:
-        logger.warning(f"No TF had >= {min_targets} targets in dataset.")
         empty = pd.DataFrame(index=adata.obs_names)
         return empty, empty
 
-    priors_filtered = priors[priors["source"].isin(valid_tfs)]
+    pri = pri[pri["source"].isin(valid_tfs)].copy()
 
-    # Build Matrix
-    genes_cat = pd.Categorical(priors_filtered["target"], categories=adata.var_names)
-    tfs_cat = pd.Categorical(priors_filtered["source"], categories=valid_tfs)
+    genes_cat = pd.Categorical(pri["target"], categories=adata.var_names)
+    tfs_cat = pd.Categorical(pri["source"], categories=valid_tfs)
 
-    valid_mask = genes_cat.codes != -1
-    row_ind = genes_cat.codes[valid_mask]
-    col_ind = tfs_cat.codes[valid_mask]
-
-    raw_weights = priors_filtered["weight"].values[valid_mask]
-    directions = priors_filtered["interaction"].values[valid_mask]
-    data_val = raw_weights * directions
+    row_ind = genes_cat.codes
+    col_ind = tfs_cat.codes
+    data_val = pri["signed_weight"].to_numpy(dtype=np.float64)
 
     W = csr_matrix(
         (data_val, (row_ind, col_ind)),
@@ -61,26 +69,26 @@ def run_z_aggregate(
         term1 = term1.toarray()
 
     term2 = mean @ W_scaled
+    if issparse(term2):
+        term2 = term2.toarray()
+
     numerator = term1 - term2
 
-    sum_sq_weights = np.array(W.power(2).sum(axis=0)).flatten()
-    denominator = np.sqrt(sum_sq_weights)
-    denominator[denominator == 0] = 1.0
+    sum_sq_weights = np.asarray(W.power(2).sum(axis=0)).ravel()
+    denominator = np.sqrt(np.maximum(sum_sq_weights, 1e-12))
 
     final_z = numerator / denominator
 
-    # Convert to P-Values
     abs_z = np.abs(final_z)
     p_values = 2 * ndtr(-abs_z)
     p_values = np.clip(p_values, 1e-300, 1.0)
 
-    activation_dir = np.sign(final_z)
-
-    min_val = np.finfo(p_values.dtype).tiny
-    p_values = np.clip(p_values, min_val, 1.0)
-    scores = -np.log(p_values) * activation_dir
+    scores = -np.log(p_values) * np.sign(final_z)
 
     scores_df = pd.DataFrame(scores, index=adata.obs_names, columns=valid_tfs)
     pvalues_df = pd.DataFrame(p_values, index=adata.obs_names, columns=valid_tfs)
+
+    scores_df = scores_df.astype(np.float64)
+    pvalues_df = pvalues_df.astype(np.float64)
 
     return scores_df, pvalues_df

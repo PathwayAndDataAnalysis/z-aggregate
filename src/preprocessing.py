@@ -1,12 +1,12 @@
 import os
-import numpy as np
 import pandas as pd
+import numpy as np
 import scanpy as sc
 from anndata import AnnData
 from scipy.sparse import issparse
 import logging
+from pathlib import Path
 import re
-import decoupler as dc
 from tqdm import tqdm
 from .WeightType import WeightType
 
@@ -90,83 +90,133 @@ def preprocess_adata(
 
 
 def read_prior_network_file(prior_type: str) -> pd.DataFrame:
-    logger.info(f"Reading prior network for type: {prior_type}")
+    """
+    Load prior network from local files.
 
-    # causalpath-priors
-    if prior_type == "causalpath-priors":
-        prior_file = "./data/causal-priors.tsv"
-        df = pd.read_csv(
-            prior_file,
-            sep="\t",
-            header=None,
-            names=["source", "interaction", "target"],
-        )
+    Supported:
+      - collectri
+      - dorothea
+      - ensemble / ensemble-priors
+      - custom file path
 
-    elif prior_type == "collectri":
-        collectri = dc.op.collectri(organism="human", license="academic")
-        df = collectri[["source", "target", "weight"]].copy()
-        df = df[~df["target"].str.startswith("hsa-", na=False)]
-        df.rename(columns={"weight": "interaction"}, inplace=True)
+    Expected output:
+      source | interaction | target
+    """
 
-    elif prior_type == "dorothea":
-        dorothea = dc.op.dorothea(organism="human", license="academic")
-        df = dorothea[["source", "target", "weight"]].copy()
-        df.rename(columns={"weight": "interaction"}, inplace=True)
+    data_dir = Path("data")
+    prior_files = {
+        "collectri": data_dir / "collectri.tsv",
+        "dorothea": data_dir / "dorothea.tsv",
+        "ensemble": data_dir / "ensemble-priors.tsv",
+        "ensemble-priors": data_dir / "ensemble-priors.tsv",
+    }
 
-    elif prior_type == "ensemble-priors":
-        prior_file = "./data/ensemble-priors.tsv"
-        df = pd.read_csv(
-            prior_file,
-            sep="\t",
-            header=None,
-            names=["source", "interaction", "target"],
-        )
-    
+    if prior_type in prior_files:
+        prior_file = prior_files[prior_type]
     elif os.path.exists(prior_type):
-        logger.info(f"Reading custom prior network from file: {prior_type}")
-        with open(prior_type, 'r') as f:
-            first_line = f.readline().lower()
-        if "source" in first_line and "target" in first_line:
-            df = pd.read_csv(prior_type, sep="\t")
-            df.columns = df.columns.str.lower()
-        else:
-            df = pd.read_csv(prior_type, sep="\t", header=None)
-            if df.shape[1] == 3:
-                df.columns = ["source", "interaction", "target"]
-            elif df.shape[1] >= 4:
-                df = df.iloc[:, :4]
-                df.columns = ["source", "interaction", "target", "weight"]
+        prior_file = Path(prior_type)
+    else:
+        raise ValueError(
+            f"Unsupported prior_type: {prior_type}. "
+            f"Use collectri, dorothea, ensemble, or provide a valid file path."
+        )
+
+    if not prior_file.exists():
+        raise FileNotFoundError(f"Prior file not found: {prior_file}")
+
+    sep = "\t" if prior_file.suffix.lower() in [".tsv", ".txt"] else ","
+
+    with open(prior_file, "r") as f:
+        first_line = f.readline().lower().strip()
+
+    has_header = ("source" in first_line and "target" in first_line) or (
+        "tf" in first_line and "gene" in first_line
+    )
+
+    if has_header:
+        df = pd.read_csv(prior_file, sep=sep)
+        df.columns = (
+            df.columns.astype(str)
+            .str.lower()
+            .str.strip()
+            .str.replace(" ", "_", regex=False)
+        )
+
+        df = df.rename(
+            columns={
+                "tf": "source",
+                "regulator": "source",
+                "gene": "target",
+                "target_gene": "target",
+                "mor": "interaction",
+                "mode": "interaction",
+                "direction": "interaction",
+                "effect": "interaction",
+                "sign": "interaction",
+            }
+        )
+        if "interaction" not in df.columns and "weight" in df.columns:
+            df = df.rename(columns={"weight": "interaction"})
 
     else:
-        raise ValueError(f"Unsupported prior type: {prior_type}")
+        df = pd.read_csv(prior_file, sep=sep, header=None)
+        if df.shape[1] == 3:
+            df.columns = ["source", "interaction", "target"]
+        elif df.shape[1] >= 4:
+            df = df.iloc[:, :4]
+            df.columns = ["source", "interaction", "target", "weight"]
+        else:
+            raise ValueError(
+                f"Unexpected prior file format. Expected 3 or 4 columns, got {df.shape[1]}."
+            )
+
+    required_cols = {"source", "interaction", "target"}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"Missing required columns. Found columns: {list(df.columns)}")
 
     interaction_map = {
         "upregulates-expression": 1,
         "downregulates-expression": -1,
-        "up": 1,
-        "down": -1,
+        "upregulates": 1,
+        "downregulates": -1,
+        "activation": 1,
+        "inhibition": -1,
+        "activates": 1,
+        "inhibits": -1
     }
 
-    col = df["interaction"]
-    # handle strings
-    if col.dtype == "object":
-        col = col.astype(str).str.lower().str.strip()
-        col = col.replace(interaction_map)
+    interaction = df["interaction"]
 
-    # convert to numeric
-    col = pd.to_numeric(col, errors="coerce")
-    col = np.sign(col)
-    col = col.replace(0, np.nan)
-    df["interaction"] = col.astype("Int64")
+    if interaction.dtype == "object":
+        interaction = (
+            interaction.astype(str).str.lower().str.strip().replace(interaction_map)
+        )
+
+    interaction = pd.to_numeric(interaction, errors="coerce")
+    interaction = np.sign(interaction)
+    interaction = pd.Series(interaction, index=df.index).replace(0, np.nan)
+
+    df["interaction"] = interaction
+
+    df["source"] = df["source"].astype(str).str.strip()
+    df["target"] = df["target"].astype(str).str.strip()
+
     cols_to_keep = ["source", "interaction", "target"]
-    if "weight" in df.columns:
-        cols_to_keep.append("weight")
-    df = df[cols_to_keep]
-    df = df.dropna(subset=["interaction", "source", "target"])
-    logger.info(
-        f"   Loaded {len(df)} interactions. " f"Unique TFs: {df['source'].nunique()}"
-    )
 
+    if "weight" in df.columns:
+        df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
+        cols_to_keep.append("weight")
+
+    df = df[cols_to_keep]
+    df = df.dropna(subset=["source", "interaction", "target"])
+    df = df[
+        (df["source"] != "")
+        & (df["target"] != "")
+        & (df["source"].str.lower() != "nan")
+        & (df["target"].str.lower() != "nan")
+    ]
+    df["interaction"] = df["interaction"].astype(int)
+    df = df.drop_duplicates().reset_index(drop=True)
     return df
 
 
@@ -276,32 +326,53 @@ def compute_network_weights(
 
 
 def get_single_perturbation(label):
-    if pd.isna(label) or str(label).lower() == "nan":
+    CONTROL_RE = re.compile(
+        r"^(?:control|ctrl|negctrl|negative[_ -]?control|non[_ -]?targeting|ntc|nt)$",
+        re.IGNORECASE,
+    )
+    GUIDE_RE = re.compile(r"^(?:g\d+|\d+)$", re.IGNORECASE)
+
+    def is_control_token(s: str) -> bool:
+        return bool(CONTROL_RE.fullmatch(str(s).strip()))
+
+    if pd.isna(label):
         return "control"
-    label = str(label)
-    ctrl_terms = ["control", "ctrl", "negctrl", "non-targeting", "neg", "nt"]
 
-    def is_ctrl(s):
-        return any(t in s.lower() for t in ctrl_terms)
+    label = str(label).strip()
+    if not label or label.lower() == "nan":
+        return "control"
 
-    if "_" in label:
-        parts = label.split("_")
-        if len(parts) == 2:
-            p1, p2 = parts
-            is_guide_id = p2.isdigit() or bool(re.match(r"^g\d+$", p2))
-            if not is_guide_id:
-                p1_c = is_ctrl(p1)
-                p2_c = is_ctrl(p2)
-                if p1_c and p2_c:
-                    return "control"
-                if p1_c:
-                    return p2
-                if p2_c:
-                    return p1
-                if p1 != p2:
-                    return None
-        base = parts[0]
-    else:
-        base = label
-    base = re.sub(r"g\d+$", "", base)
-    return base
+    # Remove trailing guide ID like _g1 or _1 for whole-label control cases
+    label_no_guide = re.sub(r"_(?:g\d+|\d+)$", "", label, flags=re.IGNORECASE)
+
+    if is_control_token(label_no_guide):
+        return "control"
+
+    parts = label.split("_")
+
+    if len(parts) == 1:
+        return re.sub(r"g\d+$", "", parts[0], flags=re.IGNORECASE)
+
+    if len(parts) != 2:
+        return None
+
+    p1, p2 = parts
+
+    # Case: TP53_g1 or TP53_1
+    if GUIDE_RE.fullmatch(p2):
+        base = re.sub(r"g\d+$", "", p1, flags=re.IGNORECASE)
+        return "control" if is_control_token(base) else base
+
+    p1_ctrl = is_control_token(p1)
+    p2_ctrl = is_control_token(p2)
+
+    if p1_ctrl and p2_ctrl:
+        return "control"
+    if p1_ctrl and not p2_ctrl:
+        return p2
+    if p2_ctrl and not p1_ctrl:
+        return p1
+    if p1 == p2:
+        return p1
+
+    return None

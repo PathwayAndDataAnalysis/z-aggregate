@@ -66,9 +66,7 @@ def main():
         default="both",
         help="Output file format",
     )
-    parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Increase output verbosity"
-    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Increase output verbosity")
 
     args = parser.parse_args()
 
@@ -94,13 +92,19 @@ def main():
         )
 
     # 3. Load & Weight Network
-    prior_df = read_prior_network_file(args.prior_type)
-    prior_df = compute_network_weights(
-        adata, prior_df, weight_type=WeightType(args.weight_type)
+    priors = read_prior_network_file(args.priors)
+    # 3.1 Filter to TFs with sufficient targets
+    prior_fltd = priors[priors["target"].isin(set(adata.var_names))].copy()
+    source_counts = prior_fltd["source"].value_counts()
+    valid_sources = source_counts[source_counts >= args.min_targets].index
+    prior_fltd = prior_fltd[prior_fltd["source"].isin(valid_sources)].reset_index(drop=True)
+    # 3.2 Compute weights
+    prior_fltd_wgtd = compute_network_weights(
+        adata, prior_fltd, weight_type=WeightType(args.weight_type)
     )
 
     # 4. Run Algorithm
-    scores, pvalues = run_z_aggregate(adata, prior_df, min_targets=args.min_targets)
+    scores, pvalues = run_z_aggregate(adata, prior_fltd_wgtd, min_targets=args.min_targets)
     scores.sort_index(axis=1, inplace=True)
     pvalues.sort_index(axis=1, inplace=True)
 
@@ -109,8 +113,19 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     result_prefix = Path(args.dataset).stem
-    prior_prefix = Path(args.prior_type).stem if args.prior_type not in ("causalpath-priors", "collectri", "dorothea", "ensemble-priors", 'file_path') else args.prior_type
-
+    prior_prefix = (
+        Path(args.prior_type).stem
+        if args.prior_type
+        not in (
+            "causalpath-priors",
+            "collectri",
+            "dorothea",
+            "ensemble-priors",
+            "file_path",
+        )
+        else args.prior_type
+    )
+    
     if args.output_format in ("tsv", "csv", "both"):
         format_to_write = (
             "tsv" if args.output_format == "both" else [args.output_format]
@@ -118,12 +133,10 @@ def main():
         sep = "\t" if format_to_write == "tsv" else ","
 
         scores_file_name = (
-            out_dir
-            / f"{result_prefix}_{prior_prefix}_z_agg_scores.{format_to_write}"
+            out_dir / f"{result_prefix}_{prior_prefix}_z_agg_scores.{format_to_write}"
         )
         pvalues_file_name = (
-            out_dir
-            / f"{result_prefix}_{prior_prefix}_z_agg_pvalues.{format_to_write}"
+            out_dir / f"{result_prefix}_{prior_prefix}_z_agg_pvalues.{format_to_write}"
         )
         scores.to_csv(scores_file_name, sep=sep)
         pvalues.to_csv(pvalues_file_name, sep=sep)
@@ -140,15 +153,13 @@ def main():
     if args.output_format in ("h5ad", "both"):
         adata_out = adata.copy()
 
-        score_key = "z_agg_scores"
-        pval_key = "z_agg_pvalues"
+        score_key = "z_aggregate_scores"
+        pval_key = "z_aggregate_pvalues"
 
         adata_out.obsm[score_key] = scores
         adata_out.obsm[pval_key] = pvalues
 
-        h5ad_filename = (
-            out_dir / f"{result_prefix}_{prior_prefix}_z_agg_results.h5ad"
-        )
+        h5ad_filename = out_dir / f"{result_prefix}_z_aggregate_results.h5ad"
         adata_out.write_h5ad(h5ad_filename)
 
         logging.info(
