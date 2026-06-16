@@ -47,9 +47,6 @@ result/**/*
 results/**/*
 !results/**/
 !results/**/.gitkeep
-dataset/**/*
-!dataset/**/
-!dataset/**/.gitkeep
 
 # Reproduction outputs: ignore files, keep directory skeletons
 reproduce/Reproduce scRNASeq Results/scRNASeq/**/*
