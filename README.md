@@ -166,15 +166,15 @@ Output files are written to the directory given by `--output`.
 
 For table output, `z-aggregate` writes:
 
-- `<dataset>_<prior>_z_agg_scores.<format>`
-- `<dataset>_<prior>_z_agg_pvalues.<format>`
+- `<dataset>_<prior>_z-aggregate_scores.<format>`
+- `<dataset>_<prior>_z-aggregate_pvalues.<format>`
 
 For AnnData output, it writes:
 
-- `<dataset>_z_aggregate_results.h5ad`
+- `<dataset>_z-aggregate_results.h5ad`
 
-The AnnData output contains the activity scores in `.obsm["z_aggregate_scores"]`
-and p-values in `.obsm["z_aggregate_pvalues"]`.
+The AnnData output contains the activity scores in `.obsm["z-aggregate_scores"]`
+and p-values in `.obsm["z-aggregate_pvalues"]`.
 
 ## Reproducing Paper Results
 
