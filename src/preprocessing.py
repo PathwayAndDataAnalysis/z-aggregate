@@ -94,9 +94,10 @@ def read_prior_network_file(prior_type: str) -> pd.DataFrame:
     Load prior network from local files.
 
     Supported:
+      - causalpath
       - collectri
       - dorothea
-      - ensemble / ensemble-priors
+      - ensemble
       - custom file path
 
     Expected output:
@@ -105,10 +106,10 @@ def read_prior_network_file(prior_type: str) -> pd.DataFrame:
 
     data_dir = Path("data")
     prior_files = {
+        "causalpath": data_dir / "causalpath.tsv",
         "collectri": data_dir / "collectri.tsv",
         "dorothea": data_dir / "dorothea.tsv",
-        "ensemble": data_dir / "ensemble-priors.tsv",
-        "ensemble-priors": data_dir / "ensemble-priors.tsv",
+        "ensemble": data_dir / "ensemble.tsv",
     }
 
     if prior_type in prior_files:
@@ -118,11 +119,8 @@ def read_prior_network_file(prior_type: str) -> pd.DataFrame:
     else:
         raise ValueError(
             f"Unsupported prior_type: {prior_type}. "
-            f"Use collectri, dorothea, ensemble, or provide a valid file path."
+            f"Use causalpath, collectri, dorothea, ensemble, or provide a valid file path."
         )
-
-    if not prior_file.exists():
-        raise FileNotFoundError(f"Prior file not found: {prior_file}")
 
     sep = "\t" if prior_file.suffix.lower() in [".tsv", ".txt"] else ","
 
@@ -178,11 +176,7 @@ def read_prior_network_file(prior_type: str) -> pd.DataFrame:
         "upregulates-expression": 1,
         "downregulates-expression": -1,
         "upregulates": 1,
-        "downregulates": -1,
-        "activation": 1,
-        "inhibition": -1,
-        "activates": 1,
-        "inhibits": -1
+        "downregulates": -1
     }
 
     interaction = df["interaction"]

@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 import gc
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 from tqdm.auto import tqdm
-
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
 
 from utility_functions import (
     read_adata_file,
@@ -26,38 +21,48 @@ from utility_functions import (
     normalize_index,
 )
 
-ANALYSIS_DIR = SCRIPTS_DIR.parent
-ADATA_DIR = ANALYSIS_DIR / "scRNASeq"
-SCORES_DIR = ANALYSIS_DIR / "scores"
-RESULTS_DIR = ANALYSIS_DIR / "results"
+SCRATCH_ROOT = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data")
+ADATA_DIR = SCRATCH_ROOT / "scRNASeq"
+SCORES_DIR = SCRATCH_ROOT / "scores"
 
-MWU_OUT_DIR = RESULTS_DIR / "Methods_MWU-Delongs" / "MWU"
-DELONG_OUT_DIR = RESULTS_DIR / "Methods_MWU-Delongs" / "DeLong_top2"
 
-PRIOR_TYPE = "causalpath-priors"
+OUT_DIR = SCRATCH_ROOT / "Methods_MWU-Delongs"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+PRIOR_TYPE = "causalpath"
 WEIGHT_TYPE = "UNIFORM"
 
 MWU_ALPHA = 0.1
 DELONG_ALPHA = 0.1
 MIN_PVALUE = 1e-300
 
-METHODS = {
-    "z-agg": "z-agg",
-    "viper": "VIPER",
-    "ulm": "ULM",
-    "zscore": "zscore",
-}
-REQUIRED_METHODS = list(METHODS)
+REQUIRED_METHODS = ["z-aggregate", "viper", "ulm", "zscore"]
 
 METHOD_FILE_PATTERNS = {
-    "z-agg": [f"*z-agg*{PRIOR_TYPE}*{WEIGHT_TYPE}*.parquet"],
+    "z-aggregate": [f"*z-aggregate*{PRIOR_TYPE}*{WEIGHT_TYPE}*.parquet"],
     "viper": [f"*viper*{PRIOR_TYPE}*{WEIGHT_TYPE}*.parquet"],
     "ulm": [f"*ulm*{PRIOR_TYPE}*{WEIGHT_TYPE}*.parquet"],
     "zscore": [f"*zscore*{PRIOR_TYPE}*{WEIGHT_TYPE}*.parquet"],
 }
 
-MWU_OUT_DIR.mkdir(parents=True, exist_ok=True)
-DELONG_OUT_DIR.mkdir(parents=True, exist_ok=True)
+MWU_COLS = [
+    "Dataset",
+    "TF",
+    "Method",
+    "N_Pert",
+    "N_Control",
+    "U_Stat",
+    "MWU_AUC_Effect",
+    "ROC_AUC",
+    "PR_AUC",
+    "AP_Baseline",
+    "AP_Lift",
+    "P_Value",
+    "Adjusted_P_Value",
+    "Significant_FDR_BH",
+    "Mean_Diff",
+    "Score",
+]
 
 DELONG_COLS = [
     "Dataset",
@@ -66,11 +71,14 @@ DELONG_COLS = [
     "Top_Method",
     "Top_ROC_AUC",
     "Top_MWU_Adjusted_P_Value",
+    "Top_MWU_Significant_FDR_BH",
     "Top_N_Cells",
     "Top_N_Pos",
     "Top_N_Control",
     "Second_Method",
     "Second_ROC_AUC",
+    "Second_MWU_Adjusted_P_Value",
+    "Second_MWU_Significant_FDR_BH",
     "AUC_Diff",
     "DeLong_Z",
     "DeLong_P_Value",
@@ -79,7 +87,10 @@ DELONG_COLS = [
 ]
 
 
-def load_method_scores(dataset_name: str, tf_list: list[str]) -> dict[str, pd.DataFrame] | None:
+def load_method_scores(
+    dataset_name: str,
+    tf_list: list[str],
+) -> dict[str, pd.DataFrame] | None:
     score_dir = SCORES_DIR / dataset_name
     if not score_dir.exists():
         print(f"Skipping {dataset_name}: missing score directory {score_dir}")
@@ -165,7 +176,7 @@ def compute_mwu_for_dataset(
 ) -> pd.DataFrame:
     control_cells = pd.Index(condition_clean.index[condition_clean == "control"])
     if len(control_cells) < 2:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=MWU_COLS)
 
     rows: list[dict] = []
     tf_list = list(params["common_perturbed_tfs"])
@@ -186,12 +197,21 @@ def compute_mwu_for_dataset(
             if result is None:
                 continue
 
-            rows.append({"Dataset": dataset_name, "TF": tf, "Method": method_name, **result})
+            rows.append(
+                {
+                    "Dataset": dataset_name,
+                    "TF": tf,
+                    "Method": method_name,
+                    **result,
+                }
+            )
 
     if not rows:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=MWU_COLS)
 
     df = pd.DataFrame(rows)
+
+    # Dataset-level BH correction, separately within each method.
     df = bh_correct_by_method(
         df,
         methods=REQUIRED_METHODS,
@@ -199,32 +219,14 @@ def compute_mwu_for_dataset(
         min_pvalue=MIN_PVALUE,
     )
 
-    cols = [
-        "Dataset",
-        "TF",
-        "Method",
-        "N_Pert",
-        "N_Control",
-        "U_Stat",
-        "MWU_AUC_Effect",
-        "ROC_AUC",
-        "PR_AUC",
-        "AP_Baseline",
-        "AP_Lift",
-        "P_Value",
-        "Adjusted_P_Value",
-        "Significant_FDR_BH",
-        "Mean_Diff",
-        "Score",
-    ]
-
-    missing = [col for col in cols if col not in df.columns]
+    missing = [col for col in MWU_COLS if col not in df.columns]
     if missing:
-        raise ValueError(
-            f"MWU output is missing columns. Check mann_whitney_perturbed_vs_control return values: {missing}"
-        )
+        raise ValueError(f"MWU output is missing columns: {missing}")
 
-    return df[cols].sort_values(["Dataset", "Method", "Adjusted_P_Value", "P_Value"])
+    return df[MWU_COLS].sort_values(
+        ["Dataset", "Method", "Adjusted_P_Value", "P_Value"],
+        ascending=[True, True, True, True],
+    )
 
 
 def build_score_matrix(
@@ -237,7 +239,11 @@ def build_score_matrix(
     for method_name, df_scores in method_scores.items():
         if tf not in df_scores.columns:
             continue
-        score_mat[method_name] = pd.to_numeric(df_scores.loc[eval_cells, tf], errors="coerce")
+
+        score_mat[method_name] = pd.to_numeric(
+            df_scores.loc[eval_cells, tf],
+            errors="coerce",
+        )
 
     return score_mat.dropna(axis=1, how="all").dropna(axis=0, how="any")
 
@@ -249,23 +255,17 @@ def compute_delong_top2_for_dataset(
     method_scores: dict[str, pd.DataFrame],
     mwu_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    if mwu_df.empty or "Adjusted_P_Value" not in mwu_df.columns:
-        return pd.DataFrame()
+    if mwu_df.empty:
+        return pd.DataFrame(columns=[col for col in DELONG_COLS if not col.startswith("DeLong_P_Value_FDR_BH")])
 
-    sig = mwu_df[mwu_df["Adjusted_P_Value"].le(MWU_ALPHA)].copy()
-    if sig.empty:
-        return pd.DataFrame()
-
-    sig_keys = set(zip(sig["Dataset"], sig["TF"], sig["Method"]))
-    sig_p = sig.set_index(["Dataset", "TF", "Method"])["Adjusted_P_Value"].to_dict()
-
-    candidate_tfs = sorted(set(params["common_perturbed_tfs"]) & set(sig["TF"]) & set(condition_clean.unique()))
+    mwu_lookup = mwu_df.set_index(["Dataset", "TF", "Method"])
 
     rows: list[dict] = []
-    mode_label = "CRISPRa" if params["is_activation"] else "CRISPRi"
+    tf_list = list(params["common_perturbed_tfs"])
 
-    for tf in tqdm(candidate_tfs, desc=f"DeLong {dataset_name}"):
+    for tf in tqdm(tf_list, desc=f"DeLong {dataset_name}"):
         eval_cells = pd.Index(condition_clean.index[(condition_clean == tf) | (condition_clean == "control")])
+
         if len(eval_cells) == 0:
             continue
 
@@ -295,17 +295,44 @@ def compute_delong_top2_for_dataset(
             except Exception:
                 continue
 
-            method_results.append({"method": method_name, "auc": float(auc), "pred": pred})
+            method_results.append(
+                {
+                    "method": method_name,
+                    "auc": float(auc),
+                    "pred": pred,
+                }
+            )
 
         if len(method_results) < 2:
             continue
 
-        method_results = sorted(method_results, key=lambda item: item["auc"], reverse=True)
-        top1, top2 = method_results[0], method_results[1]
+        method_results = sorted(
+            method_results,
+            key=lambda item: item["auc"],
+            reverse=True,
+        )
+
+        top1 = method_results[0]
+        top2 = method_results[1]
 
         top_key = (dataset_name, tf, top1["method"])
-        if top_key not in sig_keys:
+        second_key = (dataset_name, tf, top2["method"])
+
+        if top_key not in mwu_lookup.index:
             continue
+
+        top_mwu_adj = float(mwu_lookup.loc[top_key, "Adjusted_P_Value"])
+        top_mwu_sig = bool(mwu_lookup.loc[top_key, "Significant_FDR_BH"])
+
+        if not top_mwu_sig:
+            continue
+
+        if second_key in mwu_lookup.index:
+            second_mwu_adj = float(mwu_lookup.loc[second_key, "Adjusted_P_Value"])
+            second_mwu_sig = bool(mwu_lookup.loc[second_key, "Significant_FDR_BH"])
+        else:
+            second_mwu_adj = np.nan
+            second_mwu_sig = False
 
         _, _, z, p = delong_roc_test(y, top1["pred"], top2["pred"])
 
@@ -313,15 +340,17 @@ def compute_delong_top2_for_dataset(
             {
                 "Dataset": dataset_name,
                 "TF": tf,
-                "Mode": mode_label,
                 "Top_Method": top1["method"],
                 "Top_ROC_AUC": top1["auc"],
-                "Top_MWU_Adjusted_P_Value": sig_p.get(top_key, np.nan),
+                "Top_MWU_Adjusted_P_Value": top_mwu_adj,
+                "Top_MWU_Significant_FDR_BH": top_mwu_sig,
                 "Top_N_Cells": int(len(y)),
                 "Top_N_Pos": int(np.sum(y)),
                 "Top_N_Control": int(len(y) - np.sum(y)),
                 "Second_Method": top2["method"],
                 "Second_ROC_AUC": top2["auc"],
+                "Second_MWU_Adjusted_P_Value": second_mwu_adj,
+                "Second_MWU_Significant_FDR_BH": second_mwu_sig,
                 "AUC_Diff": float(top1["auc"] - top2["auc"]),
                 "DeLong_Z": z,
                 "DeLong_P_Value": p,
@@ -329,6 +358,102 @@ def compute_delong_top2_for_dataset(
         )
 
     return pd.DataFrame(rows)
+
+
+def correct_delong_by_dataset(delong_raw: pd.DataFrame) -> pd.DataFrame:
+    if delong_raw.empty:
+        return pd.DataFrame(columns=DELONG_COLS)
+
+    corrected_frames: list[pd.DataFrame] = []
+
+    # Required rule:
+    # BH correction is applied separately within each dataset.
+    for dataset_name, dataset_df in delong_raw.groupby("Dataset", sort=True):
+        dataset_df = apply_fdr_bh(
+            dataset_df,
+            p_col="DeLong_P_Value",
+            adjusted_col="DeLong_P_Value_FDR_BH",
+            significant_col="DeLong_Significant_FDR_BH",
+            alpha=DELONG_ALPHA,
+        )
+
+        dataset_df["DeLong_Significant_FDR_BH"] = dataset_df["DeLong_Significant_FDR_BH"].fillna(False).astype(bool)
+
+        corrected_frames.append(dataset_df)
+
+    corrected = pd.concat(corrected_frames, ignore_index=True)
+
+    for col in DELONG_COLS:
+        if col not in corrected.columns:
+            corrected[col] = np.nan
+
+    return corrected[DELONG_COLS].sort_values(
+        ["Dataset", "Top_ROC_AUC", "AUC_Diff"],
+        ascending=[True, False, False],
+    )
+
+
+def make_method_performance_summary(
+    merged_mwu: pd.DataFrame,
+    merged_delong: pd.DataFrame,
+) -> pd.DataFrame:
+    summary = pd.DataFrame({"Method": REQUIRED_METHODS})
+
+    if not merged_mwu.empty:
+        mwu_summary = merged_mwu.groupby("Method", as_index=False).agg(
+            MWU_Tests=("TF", "size"),
+            MWU_Significant=("Significant_FDR_BH", "sum"),
+            MWU_Mean_ROC_AUC=("ROC_AUC", "mean"),
+            MWU_Median_ROC_AUC=("ROC_AUC", "median"),
+            MWU_Mean_PR_AUC=("PR_AUC", "mean"),
+            MWU_Median_PR_AUC=("PR_AUC", "median"),
+        )
+        summary = summary.merge(mwu_summary, on="Method", how="left")
+
+    if not merged_delong.empty:
+        top_summary = (
+            merged_delong.groupby("Top_Method", as_index=False)
+            .agg(
+                DeLong_Top2_Tests=("TF", "size"),
+                Best_Count_DeLong_Significant=("DeLong_Significant_FDR_BH", "sum"),
+                Top_Mean_ROC_AUC=("Top_ROC_AUC", "mean"),
+                Top_Median_ROC_AUC=("Top_ROC_AUC", "median"),
+                Mean_AUC_Diff=("AUC_Diff", "mean"),
+                Median_AUC_Diff=("AUC_Diff", "median"),
+            )
+            .rename(columns={"Top_Method": "Method"})
+        )
+
+        second_summary = (
+            merged_delong.groupby("Second_Method", as_index=False)
+            .agg(Second_Method_Count=("TF", "size"))
+            .rename(columns={"Second_Method": "Method"})
+        )
+
+        summary = summary.merge(top_summary, on="Method", how="left")
+        summary = summary.merge(second_summary, on="Method", how="left")
+
+    count_cols = [
+        "MWU_Tests",
+        "MWU_Significant",
+        "DeLong_Top2_Tests",
+        "Best_Count_DeLong_Significant",
+        "Second_Method_Count",
+    ]
+
+    for col in count_cols:
+        if col not in summary.columns:
+            summary[col] = 0
+        summary[col] = summary[col].fillna(0).astype(int)
+
+    numeric_cols = [col for col in summary.columns if col not in ["Method", *count_cols]]
+    for col in numeric_cols:
+        summary[col] = pd.to_numeric(summary[col], errors="coerce")
+
+    return summary.sort_values(
+        ["Best_Count_DeLong_Significant", "DeLong_Top2_Tests", "MWU_Significant"],
+        ascending=[False, False, False],
+    )
 
 
 def main() -> None:
@@ -352,8 +477,8 @@ def main() -> None:
             condition_clean=condition_clean,
             method_scores=method_scores,
         )
+
         if not mwu_df.empty:
-            save_tsv(mwu_df, MWU_OUT_DIR / f"MWU_{dataset_name}.tsv")
             all_mwu.append(mwu_df)
 
         delong_df = compute_delong_top2_for_dataset(
@@ -363,6 +488,7 @@ def main() -> None:
             method_scores=method_scores,
             mwu_df=mwu_df,
         )
+
         if not delong_df.empty:
             all_delong_raw.append(delong_df)
 
@@ -371,35 +497,27 @@ def main() -> None:
 
     if all_mwu:
         merged_mwu = pd.concat(all_mwu, ignore_index=True).sort_values(
-            ["Dataset", "Method", "Adjusted_P_Value", "P_Value"]
+            ["Dataset", "Method", "Adjusted_P_Value", "P_Value"],
+            ascending=[True, True, True, True],
         )
-        save_tsv(merged_mwu, MWU_OUT_DIR / "MWU_merged.tsv")
+    else:
+        merged_mwu = pd.DataFrame(columns=MWU_COLS)
+
+    save_tsv(merged_mwu, OUT_DIR / "MWU_merged.tsv")
 
     if all_delong_raw:
-        corrected_delong_by_dataset = []
+        delong_raw = pd.concat(all_delong_raw, ignore_index=True)
+        merged_delong = correct_delong_by_dataset(delong_raw)
+    else:
+        merged_delong = pd.DataFrame(columns=DELONG_COLS)
 
-        for dataset_name, dataset_df in pd.concat(all_delong_raw, ignore_index=True).groupby("Dataset", sort=True):
-            dataset_df = apply_fdr_bh(
-                dataset_df,
-                p_col="DeLong_P_Value",
-                adjusted_col="DeLong_P_Value_FDR_BH",
-                significant_col="DeLong_Significant_FDR_BH",
-                alpha=DELONG_ALPHA,
-            ).sort_values(
-                ["Top_ROC_AUC", "AUC_Diff"],
-                ascending=[False, False],
-            )
+    save_tsv(merged_delong, OUT_DIR / "DeLong_top2_merged.tsv")
 
-            dataset_df = dataset_df[DELONG_COLS]
-            save_tsv(dataset_df, DELONG_OUT_DIR / f"DeLong_top2_{dataset_name}.tsv")
-            corrected_delong_by_dataset.append(dataset_df)
-
-        merged_delong = pd.concat(corrected_delong_by_dataset, ignore_index=True).sort_values(
-            ["Dataset", "Top_ROC_AUC", "AUC_Diff"],
-            ascending=[True, False, False],
-        )
-
-        save_tsv(merged_delong, DELONG_OUT_DIR / "DeLong_top2_merged.tsv")
+    method_summary = make_method_performance_summary(
+        merged_mwu=merged_mwu,
+        merged_delong=merged_delong,
+    )
+    save_tsv(method_summary, OUT_DIR / "Method_performance_summary.tsv")
 
 
 if __name__ == "__main__":

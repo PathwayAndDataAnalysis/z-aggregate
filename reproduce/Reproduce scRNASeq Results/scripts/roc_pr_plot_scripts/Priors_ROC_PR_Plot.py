@@ -1,18 +1,6 @@
 from __future__ import annotations
 
-import os
-
-# Prevent BLAS/OpenMP over-subscription when using many processes.
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
-
-import gc
-import multiprocessing as mp
 import re
-import sys
 import warnings
 from pathlib import Path
 
@@ -20,7 +8,6 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
 import numpy as np
 import pandas as pd
 import scanpy as sc
@@ -32,100 +19,56 @@ from sklearn.metrics import (
 )
 from tqdm.auto import tqdm
 
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
 from utility_functions import (
-    preprocess_adata,
     get_single_perturbation,
-    set_publication_style,
     load_adata_files_with_params,
+    preprocess_adata,
+    set_publication_style,
 )
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-
-# =========================================================
-# CONFIG
-# =========================================================
-ANALYSIS_DIR = SCRIPTS_DIR.parent
-DATASET_DIR = ANALYSIS_DIR / "scRNASeq"
-SCORES_DIR = ANALYSIS_DIR / "scores"
-OUTPUT_PLOT_DIR = ANALYSIS_DIR / "results" / "Priors_ROC_plots"
+DATASET_DIR = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data/scRNASeq")
+SCORES_DIR = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data/scores")
+OUTPUT_PLOT_DIR = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data/Priors_ROC_PR_Plots")
 
 PRIOR_TYPES = [
-    "causalpath-priors",
+    "causalpath",
     "collectri",
     "dorothea",
-    "ensemble-priors",
+    "ensemble",
 ]
 
 WEIGHT_TYPE = "UNIFORM"
 RUN_TAG = f"prior-knowledge_{WEIGHT_TYPE}_matchedTFs"
-METHODS = [f"z-agg_{prior}_{WEIGHT_TYPE}" for prior in PRIOR_TYPES]
 
-METHOD_LABELS = {
-    f"z-agg_causalpath-priors_{WEIGHT_TYPE}": "CausalPath",
-    f"z-agg_collectri_{WEIGHT_TYPE}": "CollecTRI",
-    f"z-agg_dorothea_{WEIGHT_TYPE}": "DoRothEA",
-    f"z-agg_ensemble-priors_{WEIGHT_TYPE}": "Ensemble Priors",
+METHOD_STYLES = {
+    f"z-aggregate_causalpath_{WEIGHT_TYPE}": {
+        "label": "CausalPath",
+        "color": "tab:green",
+    },
+    f"z-aggregate_collectri_{WEIGHT_TYPE}": {
+        "label": "CollecTRI",
+        "color": "tab:orange",
+    },
+    f"z-aggregate_dorothea_{WEIGHT_TYPE}": {
+        "label": "DoRothEA",
+        "color": "tab:blue",
+    },
+    f"z-aggregate_ensemble_{WEIGHT_TYPE}": {
+        "label": "Ensemble",
+        "color": "tab:red",
+    },
 }
 
-METHOD_COLORS = {
-    f"z-agg_causalpath-priors_{WEIGHT_TYPE}": "tab:green",
-    f"z-agg_collectri_{WEIGHT_TYPE}": "tab:orange",
-    f"z-agg_dorothea_{WEIGHT_TYPE}": "tab:blue",
-    f"z-agg_ensemble-priors_{WEIGHT_TYPE}": "tab:red",
-}
-
-TARGET_DATASETS: list[str] | None = None
+METHODS = list(METHOD_STYLES)
 
 MIN_POS_CELLS = 5
 MIN_CONTROL_CELLS = 5
-
 SAVE_FORMAT = "svg"
 DPI = 300
-N_PROCESSES = max(
-    1,
-    int(os.environ.get("ROC_PR_N_PROCESSES", min(8, os.cpu_count() or 1))),
-)
 
 
-# =========================================================
-# WORKER GLOBALS
-# =========================================================
-_WORKER = {
-    "dataset_name": None,
-    "is_activation": None,
-    "condition": None,
-    "control_cells": None,
-    "method_scores": None,
-    "plot_dir": None,
-}
-
-
-def init_worker(
-    dataset_name: str,
-    is_activation: bool,
-    condition: pd.Series,
-    control_cells: pd.Index,
-    method_scores: dict[str, pd.DataFrame],
-    plot_dir: str,
-) -> None:
-    _WORKER["dataset_name"] = dataset_name
-    _WORKER["is_activation"] = is_activation
-    _WORKER["condition"] = condition
-    _WORKER["control_cells"] = control_cells
-    _WORKER["method_scores"] = method_scores
-    _WORKER["plot_dir"] = plot_dir
-
-    set_publication_style()
-
-
-# =========================================================
-# HELPERS
-# =========================================================
 def clean_index(index) -> pd.Index:
     return pd.Index(index.astype(str)).str.strip()
 
@@ -137,8 +80,18 @@ def sanitize_filename(text: str) -> str:
     return text
 
 
+def get_method_style(method: str) -> dict:
+    return METHOD_STYLES.get(
+        method,
+        {
+            "label": method,
+            "color": None,
+        },
+    )
+
+
 def method_to_prior(method: str) -> str:
-    return method.replace("z-agg_", "").replace(f"_{WEIGHT_TYPE}", "")
+    return method.replace("z-aggregate_", "").replace(f"_{WEIGHT_TYPE}", "")
 
 
 def load_params_by_prior() -> dict:
@@ -161,10 +114,10 @@ def load_scores(dataset_name: str, matched_tfs: list[str]) -> dict[str, pd.DataF
     if not score_dir.exists():
         raise FileNotFoundError(f"Missing score directory: {score_dir}")
 
-    method_scores = {}
+    method_scores: dict[str, pd.DataFrame] = {}
 
     for prior in PRIOR_TYPES:
-        method = f"z-agg_{prior}_{WEIGHT_TYPE}"
+        method = f"z-aggregate_{prior}_{WEIGHT_TYPE}"
         score_path = score_dir / f"{dataset_name}_{method}.parquet"
 
         if not score_path.exists():
@@ -175,11 +128,9 @@ def load_scores(dataset_name: str, matched_tfs: list[str]) -> dict[str, pd.DataF
         scores.columns = clean_index(scores.columns)
 
         method_scores[method] = scores.reindex(columns=matched_tfs)
-
         print(f"   Loaded {method}: {method_scores[method].shape}")
 
     missing = [method for method in METHODS if method not in method_scores]
-
     if missing:
         raise ValueError(f"Missing score files for {dataset_name}: {missing}")
 
@@ -232,9 +183,11 @@ def compute_curves(y_true: np.ndarray, y_score: np.ndarray) -> dict:
     }
 
 
-# =========================================================
-# PLOTTING
-# =========================================================
+def make_plot_directories(dataset_plot_dir: Path) -> None:
+    (dataset_plot_dir / "roc").mkdir(parents=True, exist_ok=True)
+    (dataset_plot_dir / "pr").mkdir(parents=True, exist_ok=True)
+
+
 def plot_roc(
     dataset_name: str,
     tf: str,
@@ -250,16 +203,16 @@ def plot_roc(
     )
 
     for method, metrics in sorted_methods:
+        method_style = get_method_style(method)
         plt.plot(
             metrics["fpr"],
             metrics["tpr"],
             linewidth=2,
-            color=METHOD_COLORS.get(method),
-            label=f"{METHOD_LABELS.get(method, method)} ({metrics['roc_auc']:.4f})",
+            color=method_style["color"],
+            label=f"{method_style['label']} ({metrics['roc_auc']:.4f})",
         )
 
     plt.plot([0, 1], [0, 1], linestyle="--", linewidth=1.5, color="grey")
-
     plt.xlim(0, 1)
     plt.ylim(0, 1)
     plt.xlabel("False Positive Rate", fontsize=14)
@@ -279,7 +232,7 @@ def plot_pr(
 ) -> None:
     plt.figure(figsize=(8, 8), facecolor="white")
 
-    baseline = float(np.median([m["baseline"] for m in curves_by_method.values()]))
+    baseline = float(np.median([metrics["baseline"] for metrics in curves_by_method.values()]))
 
     sorted_methods = sorted(
         curves_by_method.items(),
@@ -288,12 +241,13 @@ def plot_pr(
     )
 
     for method, metrics in sorted_methods:
+        method_style = get_method_style(method)
         plt.plot(
             metrics["recall"],
             metrics["precision"],
             linewidth=2,
-            color=METHOD_COLORS.get(method),
-            label=(f"{METHOD_LABELS.get(method, method)} (AP={metrics['pr_auc']:.4f}, lift={metrics['lift']:.4f})"),
+            color=method_style["color"],
+            label=(f"{method_style['label']} (AP={metrics['pr_auc']:.4f}, lift={metrics['lift']:.4f})"),
         )
 
     plt.axhline(
@@ -303,7 +257,6 @@ def plot_pr(
         color="grey",
         label=f"Baseline prevalence={baseline:.4f}",
     )
-
     plt.xlim(0, 1)
     plt.ylim(0, 1)
     plt.xlabel("Recall", fontsize=14)
@@ -315,39 +268,49 @@ def plot_pr(
     plt.close()
 
 
-# =========================================================
-# TF PROCESSING
-# =========================================================
-def process_tf(tf: str) -> list[dict]:
-    dataset_name = _WORKER["dataset_name"]
-    is_activation = _WORKER["is_activation"]
-    condition = _WORKER["condition"]
-    control_cells = _WORKER["control_cells"]
-    method_scores = _WORKER["method_scores"]
-    plot_dir = Path(_WORKER["plot_dir"])
+def get_shared_cells(
+    tf: str,
+    selected_cells: pd.Index,
+    method_scores: dict[str, pd.DataFrame],
+) -> pd.Index:
+    shared_cells = selected_cells.copy()
 
-    rows = []
+    for method in METHODS:
+        scores = method_scores[method]
+
+        if tf not in scores.columns:
+            return pd.Index([])
+
+        tf_scores = pd.to_numeric(scores[tf], errors="coerce")
+        valid_cells = scores.index[scores.index.isin(selected_cells) & tf_scores.notna()]
+        shared_cells = shared_cells.intersection(valid_cells)
+
+    return shared_cells
+
+
+def evaluate_tf(
+    tf: str,
+    dataset_name: str,
+    is_activation: bool,
+    condition: pd.Series,
+    control_cells: pd.Index,
+    method_scores: dict[str, pd.DataFrame],
+    dataset_plot_dir: Path,
+) -> list[dict]:
+    rows: list[dict] = []
 
     try:
         perturbed_cells = pd.Index(condition.index[condition == tf])
-
         if len(perturbed_cells) < MIN_POS_CELLS:
             return rows
 
         selected_cells = pd.Index(perturbed_cells.tolist() + control_cells.tolist()).drop_duplicates()
 
-        shared_cells = selected_cells.copy()
-
-        for method in METHODS:
-            scores = method_scores[method]
-
-            if tf not in scores.columns:
-                return rows
-
-            tf_scores = pd.to_numeric(scores[tf], errors="coerce")
-            valid_cells = scores.index[scores.index.isin(selected_cells) & tf_scores.notna()]
-
-            shared_cells = shared_cells.intersection(valid_cells)
+        shared_cells = get_shared_cells(
+            tf=tf,
+            selected_cells=selected_cells,
+            method_scores=method_scores,
+        )
 
         if len(shared_cells) == 0:
             return rows
@@ -373,8 +336,6 @@ def process_tf(tf: str) -> list[dict]:
             if not np.isfinite(y_score).all():
                 return rows
 
-            # For CRISPRi/inhibition datasets, flip sign so higher score means
-            # stronger evidence for the perturbed cells.
             if not is_activation:
                 y_score = -y_score
 
@@ -384,46 +345,36 @@ def process_tf(tf: str) -> list[dict]:
             return rows
 
         tf_file = sanitize_filename(tf)
-
-        roc_path = plot_dir / "roc" / f"{tf_file}_roc.{SAVE_FORMAT}"
-        pr_path = plot_dir / "pr" / f"{tf_file}_pr.{SAVE_FORMAT}"
+        roc_path = dataset_plot_dir / "roc" / f"{tf_file}_roc.{SAVE_FORMAT}"
+        pr_path = dataset_plot_dir / "pr" / f"{tf_file}_pr.{SAVE_FORMAT}"
 
         plot_roc(dataset_name, tf, curves_by_method, roc_path)
         plot_pr(dataset_name, tf, curves_by_method, pr_path)
 
         for method, metrics in curves_by_method.items():
+            method_style = get_method_style(method)
             rows.append(
                 {
                     "Dataset": dataset_name,
                     "TF": tf,
                     "Prior_Type": method_to_prior(method),
                     "Method": method,
-                    "Method_Label": METHOD_LABELS.get(method, method),
+                    "Method_Label": method_style["label"],
                     "N_Pos": metrics["n_pos"],
                     "N_Control": metrics["n_control"],
                     "ROC_AUC": metrics["roc_auc"],
                     "PR_AUC": metrics["pr_auc"],
                     "AP_Baseline": metrics["baseline"],
                     "AP_Lift": metrics["lift"],
-                    "ROC_Plot": str(roc_path),
-                    "PR_Plot": str(pr_path),
                 }
             )
 
-        return rows
-
     except Exception as error:
         print(f"[ERROR] {dataset_name} | {tf}: {error}")
-        return rows
+
+    return rows
 
 
-def get_chunksize(n_items: int, n_processes: int) -> int:
-    return max(1, n_items // max(1, n_processes * 4))
-
-
-# =========================================================
-# MAIN
-# =========================================================
 def main() -> None:
     set_publication_style()
     OUTPUT_PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -431,22 +382,9 @@ def main() -> None:
     params_by_prior = load_params_by_prior()
     dataset_names = get_common_datasets(params_by_prior)
 
-    if TARGET_DATASETS is not None:
-        target_set = set(TARGET_DATASETS)
-        dataset_names = [name for name in dataset_names if name in target_set]
-
-    available_datasets = {path.stem for path in DATASET_DIR.glob("*.h5ad")}
-    missing_datasets = [name for name in dataset_names if name not in available_datasets]
-    for dataset_name in missing_datasets:
-        print(f"Skipping {dataset_name}: dataset file is not available locally")
-    dataset_names = [name for name in dataset_names if name in available_datasets]
-
-    n_processes = min(N_PROCESSES, os.cpu_count() or 1)
-
-    print(f"Using {n_processes} worker processes")
     print(f"Datasets shared across priors: {len(dataset_names)}")
 
-    all_rows = []
+    all_rows: list[dict] = []
 
     for dataset_name in dataset_names:
         matched_tfs = get_matched_tfs(dataset_name, params_by_prior)
@@ -463,56 +401,32 @@ def main() -> None:
         ref_params = params_by_prior[PRIOR_TYPES[0]][dataset_name]
         is_activation = bool(ref_params["is_activation"])
 
-        try:
-            method_scores = load_scores(dataset_name, matched_tfs)
-            adata = load_processed_adata(dataset_name)
-        except (FileNotFoundError, ValueError) as error:
-            print(f"Skipping {dataset_name}: {error}")
-            continue
-
-        control_cells = pd.Index(adata.obs.index[adata.obs["condition_clean"] == "control"])
+        adata = load_processed_adata(dataset_name)
+        condition = adata.obs["condition_clean"]
+        control_cells = pd.Index(condition.index[condition == "control"])
 
         if len(control_cells) < MIN_CONTROL_CELLS:
             print(f"Skipping {dataset_name}: fewer than {MIN_CONTROL_CELLS} control cells")
-            del adata, method_scores
-            gc.collect()
             continue
 
+        method_scores = load_scores(dataset_name, matched_tfs)
+
         dataset_plot_dir = OUTPUT_PLOT_DIR / dataset_name
-        (dataset_plot_dir / "roc").mkdir(parents=True, exist_ok=True)
-        (dataset_plot_dir / "pr").mkdir(parents=True, exist_ok=True)
+        make_plot_directories(dataset_plot_dir)
 
-        ctx = mp.get_context("fork")
-        chunksize = get_chunksize(len(matched_tfs), n_processes)
-
-        with ctx.Pool(
-            processes=n_processes,
-            initializer=init_worker,
-            initargs=(
-                dataset_name,
-                is_activation,
-                adata.obs["condition_clean"],
-                control_cells,
-                method_scores,
-                str(dataset_plot_dir),
-            ),
-        ) as pool:
-            iterator = pool.imap_unordered(
-                process_tf,
-                matched_tfs,
-                chunksize=chunksize,
+        for tf in tqdm(matched_tfs, desc=f"Plotting prior curves for {dataset_name}"):
+            tf_rows = evaluate_tf(
+                tf=tf,
+                dataset_name=dataset_name,
+                is_activation=is_activation,
+                condition=condition,
+                control_cells=control_cells,
+                method_scores=method_scores,
+                dataset_plot_dir=dataset_plot_dir,
             )
 
-            for tf_rows in tqdm(
-                iterator,
-                total=len(matched_tfs),
-                desc=f"Plotting prior curves for {dataset_name}",
-            ):
-                if tf_rows:
-                    all_rows.extend(tf_rows)
-
-        del adata, method_scores
-        gc.collect()
+            if tf_rows:
+                all_rows.extend(tf_rows)
 
     if all_rows:
         summary_df = pd.DataFrame(all_rows)

@@ -76,7 +76,7 @@ wget "https://zenodo.org/records/13350497/files/TianKampmann2021_CRISPRi.h5ad?do
 | Option | Required | Default | Description |
 | --- | --- | --- | --- |
 | `-ds`, `--dataset` | Yes | - | Path to the expression dataset. Supported formats are `.h5ad`, `.csv`, `.tsv`, and `.txt`. |
-| `-p`, `--prior-type` | Yes | - | Prior network to use. Use a named prior such as `causalpath-priors`, `collectri`, `dorothea`, or `ensemble-priors`, or provide a custom file path. |
+| `-p`, `--prior-type` | Yes | - | Prior network to use. Use a named prior such as `causalpath`, `collectri`, `dorothea`, or `ensemble`, or provide a custom file path. |
 | `-o`, `--output` | Yes | - | Directory where output files will be written. |
 | `--min-targets` | No | `5` | Minimum number of target genes required for a transcription factor to be included. |
 | `--preprocess` | No | Enabled | Apply standard preprocessing before running the method. |
@@ -110,10 +110,10 @@ The prior network is passed with `--prior-type`.
 
 You may use a named prior network:
 
-- `causalpath-priors`
+- `causalpath`
 - `collectri`
 - `dorothea`
-- `ensemble-priors`
+- `ensemble`
 
 You may also provide a path to a custom `.csv`, `.tsv`, or `.txt` file.
 
@@ -154,9 +154,9 @@ Choose the edge-weighting method with `--weight-type`.
 
 | Value | Description |
 | --- | --- |
-| `Uniform` | Uses the sign of the prior interaction as the edge weight. |
-| `Correlation` | Uses Spearman correlation between transcription factor expression and target-gene expression. |
-| `Specificity` | Weights each target by `1 / number of TFs regulating that target`. |
+| `Uniform` | Assigns a positive weight of 1 to all prior edges. |
+| `Correlation` | Uses absolute Spearman correlation between transcription factor expression and target-gene expression. Replaces the existing interaction by the sign of the correlation. |
+| `Specificity` | Weights each target by `1 / number of TFs regulating that target`, giving lower weight to broadly regulated targets. |
 | `NonzeroRate` | Weights each target by its detection rate in the dataset. |
 | `Existing` | Uses the `weight` column from the prior network, if present. |
 

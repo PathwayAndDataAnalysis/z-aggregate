@@ -22,24 +22,18 @@ from scipy.stats import mannwhitneyu
 from statsmodels.stats.multitest import multipletests
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-ANALYSIS_DIR = Path(__file__).resolve().parent.parent
-REPOSITORY_ROOT = ANALYSIS_DIR.parents[1]
-PRIOR_DATA_DIR = REPOSITORY_ROOT / "data"
+PROJECT_ROOT = "/pomplun/share_home/kisan.thapa001/apps/z_agg"
 
-# Dataset-specific directionality.
-# Activation datasets: higher score should indicate stronger perturbation.
-# Inhibition datasets: lower score should indicate stronger perturbation,
-# so scores are sign-flipped before ROC AUC / PR AUC.
 ACTIVATED_DATASETS = {"TianKampmann2021_CRISPRa", "NormanWeissman2019_filtered"}
-COMMON_TF_DIR = ANALYSIS_DIR / "common_tfs"
+COMMON_TF_DIR = "/pomplun/share_home/kisan.thapa001/apps/z_agg/data/common_tfs"
 
 
 class WeightType(str, Enum):
-    UNIFORM = "Uniform_Weight"
-    CORRELATION = "Correlation_Weight"
-    SPECIFICITY = "Specificity_Weight"
-    NON_ZERO_RATIO = "Non_Zero_Ratio_Weight"
-    EXISTING = "Existing_Weight"
+    UNIFORM = "Uniform"
+    CORRELATION = "Correlation"
+    SPECIFICITY = "Specificity"
+    NON_ZERO_RATE = "NonzeroRate"
+    EXISTING = "Existing"
 
 
 def save_tsv(df: pd.DataFrame, path: Path) -> None:
@@ -75,7 +69,7 @@ def read_adata_file(gene_exp_file: str, is_cells_x_genes: bool = True) -> AnnDat
     else:
         raise ValueError(f"Unsupported format: {ext}")
 
-    # print(f"--- Data loaded successfully. Shape: {adata.shape}")
+    print(f"--- Data loaded successfully. Shape: {adata.shape}")
     return adata
 
 
@@ -88,7 +82,7 @@ def preprocess_adata(
     adata_copy.var_names = pd.Index(adata_copy.var_names.astype(str)).str.strip()
     adata_copy.var_names_make_unique()
 
-    # print(f"--- Shape before basic filtering: {adata_copy.shape}")
+    print(f"--- Shape before basic filtering: {adata_copy.shape}")
     n_cells, n_genes = adata_copy.shape
     min_genes = int(0.01 * n_genes)  # 1% of genes expressed per cell
     min_cells = int(0.001 * n_cells)  # 0.1% of cells expressing the gene
@@ -96,7 +90,7 @@ def preprocess_adata(
 
     sc.pp.filter_cells(adata_copy, min_genes=min_genes)
     sc.pp.filter_genes(adata_copy, min_cells=min_cells)
-    # print(f"--- Shape after basic filtering: {adata_copy.shape}")
+    print(f"--- Shape after basic filtering: {adata_copy.shape}")
 
     # Adaptive Mitochondrial gene filtering
     adata_copy.var["mt"] = adata_copy.var_names.str.upper().str.startswith("MT-")
@@ -115,19 +109,17 @@ def preprocess_adata(
     mt_cutoff = median_mt + (3 * mad_mt)
     mt_cutoff = max(mt_cutoff, 10.0)  # Never filter stricter than 10%
     mt_cutoff = min(mt_cutoff, 25.0)  # Never allow more than 25% MT
-    # Print statistics so you can track what happened
-    # print("Mitochondrial Filtering Dataset summary:")
-    # print(f"  - Median MT: {median_mt:.2f}%")
-    # print(f"  - MAD MT:    {mad_mt:.2f}%")
-    # print(f"  - Cutoff:    {mt_cutoff:.2f}%")
+    print("Mitochondrial Filtering Dataset summary:")
+    print(f"  - Median MT: {median_mt:.2f}%")
+    print(f"  - MAD MT:    {mad_mt:.2f}%")
+    print(f"  - Cutoff:    {mt_cutoff:.2f}%")
     cells_before = adata_copy.n_obs
-    # Actually filter the dataset
     adata_copy = adata_copy[adata_copy.obs["pct_counts_mt"] < mt_cutoff].copy()
     cells_after = adata_copy.n_obs
     removed = cells_before - cells_after
-    # print(f"  - Cells before: {cells_before:,}")
-    # print(f"  - Cells after:  {cells_after:,}")
-    # print(f"  - Removed:      {removed:,} high-MT cells\n")
+    print(f"  - Cells before: {cells_before:,}")
+    print(f"  - Cells after:  {cells_after:,}")
+    print(f"  - Removed:      {removed:,} high-MT cells\n")
 
     sc.pp.normalize_total(adata_copy, target_sum=target_sum)
     sc.pp.log1p(adata_copy)
@@ -135,7 +127,7 @@ def preprocess_adata(
     if do_scale:
         sc.pp.scale(adata_copy)
 
-    # print(f"- Preprocessing complete. Final shape: {adata_copy.shape}")
+    print(f"- Preprocessing complete. Final shape: {adata_copy.shape}")
     return adata_copy
 
 
@@ -172,7 +164,6 @@ def get_single_perturbation(label):
 
     p1, p2 = parts
 
-    # Case: TP53_g1 or TP53_1
     if GUIDE_RE.fullmatch(p2):
         base = re.sub(r"g\d+$", "", p1, flags=re.IGNORECASE)
         return "control" if is_control_token(base) else base
@@ -193,9 +184,8 @@ def get_single_perturbation(label):
 
 
 def read_prior_network_file(prior_type: str) -> pd.DataFrame:
-    # causalpath-priors
-    if prior_type == "causalpath-priors":
-        prior_file = PRIOR_DATA_DIR / "causalpath-priors.tsv"
+    if prior_type == "causalpath":
+        prior_file = PROJECT_ROOT + "/data/priors/causalpath.tsv"
         df = pd.read_csv(
             prior_file,
             sep="\t",
@@ -214,8 +204,8 @@ def read_prior_network_file(prior_type: str) -> pd.DataFrame:
         df = dorothea[["source", "target", "weight"]].copy()
         df.rename(columns={"weight": "interaction"}, inplace=True)
 
-    elif prior_type == "ensemble-priors":
-        prior_file = PRIOR_DATA_DIR / "ensemble-priors.tsv"
+    elif prior_type == "ensemble":
+        prior_file = PROJECT_ROOT + "/data/priors/ensemble.tsv"
         df = pd.read_csv(
             prior_file,
             sep="\t",
@@ -253,7 +243,6 @@ def read_prior_network_file(prior_type: str) -> pd.DataFrame:
         col = col.astype(str).str.lower().str.strip()
         col = col.replace(interaction_map)
 
-    # convert to numeric
     col = pd.to_numeric(col, errors="coerce")
     col = np.sign(col)
     col = col.replace(0, np.nan)
@@ -272,14 +261,14 @@ def compute_network_weights(
     prior_network: pd.DataFrame,
     weight_type: WeightType = WeightType.UNIFORM,
 ) -> pd.DataFrame:
-    # print(f"Computing weights using strategy: {weight_type.value}")
+    print(f"Computing weights using strategy: {weight_type.value}")
 
     if weight_type == WeightType.UNIFORM:
-        # print("   Uniform weights: using interaction as weight (no overlap filtering).")
+        print("   Uniform weights: using interaction as weight (no overlap filtering).")
         net = prior_network.copy()
         net["weight"] = net["interaction"]
         net = net[["source", "interaction", "target", "weight"]].fillna(0.0)
-        # print("   Weights computed successfully.")
+        print("   Weights computed successfully.")
         return net
 
     initial_edges = len(prior_network)
@@ -292,9 +281,7 @@ def compute_network_weights(
     else:
         coverage_pct = 0.0
 
-    # print(
-    #     f"   Network Overlap: {final_edges}/{initial_edges} edges ({coverage_pct:.2f}%) target genes present in dataset."
-    # )
+    print(f"   Network Overlap: {final_edges}/{initial_edges} edges ({coverage_pct:.2f}%) target genes present in dataset.")
 
     if net.empty:
         adata_examples = list(adata.var_names[:5])
@@ -399,8 +386,8 @@ def load_adata_files_with_params(prior_type: str) -> Dict[str, dict]:
 def get_method_key(filename: str, dataset_name: str, weight_type: str, prior_type: str) -> str:
     lower = filename.lower()
 
-    if "z-agg" in lower:
-        return f"z-agg_{weight_type}"
+    if "z-aggregate" in lower:
+        return f"z-aggregate_{weight_type}"
     elif "viper" in lower:
         return f"viper_{weight_type}"
     elif "ulm" in lower:
@@ -411,7 +398,6 @@ def get_method_key(filename: str, dataset_name: str, weight_type: str, prior_typ
         return filename.replace(f"{dataset_name}_", "").replace(".parquet", "").replace(f"{prior_type}_", "")
 
 
-# Mann Whitney U Test Code
 def mann_whitney_perturbed_vs_control(
     series_scores: pd.Series,
     perturbed_cells: pd.Index,
@@ -490,7 +476,6 @@ def apply_fdr_bh(
     significant_col: str,
     alpha: float = 0.1,
 ) -> pd.DataFrame:
-    """BH correction over all non-null p-values in df[p_col]."""
     out = df.copy()
     out[p_col] = pd.to_numeric(out[p_col], errors="coerce")
     out[adjusted_col] = np.nan
@@ -505,7 +490,6 @@ def apply_fdr_bh(
     return out
 
 
-# Delongs Test Code
 def compute_midrank(x: np.ndarray) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     order = np.argsort(x)
@@ -622,8 +606,6 @@ def compute_roc_pr_metrics_perturbed_vs_control(
     ]
 
     # Direction correction:
-    # CRISPRa: higher score should indicate perturbation.
-    # CRISPRi: lower score should indicate perturbation, so flip scores.
     if not is_activation:
         y_score = -y_score
 

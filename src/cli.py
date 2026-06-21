@@ -25,7 +25,7 @@ def main():
         "-p",
         "--prior-type",
         required=True,
-        help="Type of prior network (e.g., 'causalpath-priors', 'collectri', 'dorothea', 'ensemble-priors', or 'file_path')",
+        help="Type of prior network (e.g., 'causalpath', 'collectri', 'dorothea', 'ensemble', or 'file_path')",
     )
     parser.add_argument("-o", "--output", required=True, help="Output directory")
     parser.add_argument(
@@ -117,15 +117,15 @@ def main():
         Path(args.prior_type).stem
         if args.prior_type
         not in (
-            "causalpath-priors",
+            "causalpath",
             "collectri",
             "dorothea",
-            "ensemble-priors",
+            "ensemble",
             "file_path",
         )
         else args.prior_type
     )
-    
+
     if args.output_format in ("tsv", "csv", "both"):
         format_to_write = (
             "tsv" if args.output_format == "both" else [args.output_format]
@@ -133,10 +133,11 @@ def main():
         sep = "\t" if format_to_write == "tsv" else ","
 
         scores_file_name = (
-            out_dir / f"{result_prefix}_{prior_prefix}_z_agg_scores.{format_to_write}"
+            out_dir
+            / f"{result_prefix}_{prior_prefix}_z-aggregate_scores.{format_to_write}"
         )
         pvalues_file_name = (
-            out_dir / f"{result_prefix}_{prior_prefix}_z_agg_pvalues.{format_to_write}"
+            out_dir / f"{result_prefix}_{prior_prefix}_z-aggregate_pvalues.{format_to_write}"
         )
         scores.to_csv(scores_file_name, sep=sep)
         pvalues.to_csv(pvalues_file_name, sep=sep)
@@ -153,13 +154,13 @@ def main():
     if args.output_format in ("h5ad", "both"):
         adata_out = adata.copy()
 
-        score_key = "z_aggregate_scores"
-        pval_key = "z_aggregate_pvalues"
+        score_key = "z-aggregate_scores"
+        pval_key = "z-aggregate_pvalues"
 
         adata_out.obsm[score_key] = scores
         adata_out.obsm[pval_key] = pvalues
 
-        h5ad_filename = out_dir / f"{result_prefix}_z_aggregate_results.h5ad"
+        h5ad_filename = out_dir / f"{result_prefix}_z-aggregate_results.h5ad"
         adata_out.write_h5ad(h5ad_filename)
 
         logging.info(
