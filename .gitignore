@@ -61,6 +61,14 @@ reproduce/Reproduce scRNASeq Results/results/**/*
 !reproduce/Reproduce scRNASeq Results/results/**/
 !reproduce/Reproduce scRNASeq Results/results/**/.gitkeep
 
+# Version-controlled scRNA-seq result tables
+!reproduce/Reproduce scRNASeq Results/results/Methods_MWU-Delongs/**
+!reproduce/Reproduce scRNASeq Results/results/Priors_MWU-Delongs/**
+!reproduce/Reproduce scRNASeq Results/results/Weights_MWU-Delongs/**
+!reproduce/Reproduce scRNASeq Results/results/Supplementary_Files/**
+# Keep macOS Finder metadata ignored after the result-directory exceptions above.
+.DS_Store
+
 reproduce/Reproduce Simulated Results/simulated_data/**/*
 !reproduce/Reproduce Simulated Results/simulated_data/**/
 !reproduce/Reproduce Simulated Results/simulated_data/**/.gitkeep
