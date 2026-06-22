@@ -4,13 +4,24 @@
 [![License](https://img.shields.io/badge/License-LGPL_v2.1-blue.svg)](LICENSE)
 [![Dependency Manager](https://img.shields.io/badge/packaging-uv-purple)](https://github.com/astral-sh/uv)
 
-`z-aggregate` is a command-line tool for estimating transcription factor
-activities from transcriptomic profiles. It combines an expression matrix with a
-prior regulatory network and reports transcription factor activity scores and
-associated p-values for each cell or sample.
+## Abstract
 
-The method is intended for single-cell or bulk transcriptomic data where rows are
-observations and columns are genes.
+**Motivation:** Resource-efficient algorithms for assessing transcriptional
+factor activities in single-cell transcriptomics are a pressing need. Such
+algorithms can help us understand the underlying cellular mechanisms behind the
+observed RNA differences.
+
+**Results:** We present a new statistical method for predicting transcription
+factor activities from transcriptomic profiles using prior knowledge of target
+genes. It aggregates the standardized expression of a transcription factor’s
+known target genes into a cell-level activity score using the direction of
+regulation and the strength of the target-gene signals. Compared to
+alternatives, the method has high predictive power, is faster to compute, and
+is memory efficient, making it suitable for analyzing large single-cell RNA
+profiles.
+
+**Availability:** A Python implementation of the method is available at
+[https://github.com/PathwayAndDataAnalysis/z-aggregate](https://github.com/PathwayAndDataAnalysis/z-aggregate).
 
 ## Installation
 
