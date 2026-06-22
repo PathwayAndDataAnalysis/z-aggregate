@@ -32,26 +32,34 @@ def main():
         "--min-targets", type=int, default=5, help="Minimum targets per TF"
     )
 
-    parser.add_argument(
-        "--preprocess",
-        dest="preprocess",
-        action="store_true",
-        default=True,
-        help="Enable preprocessing",
+    preprocess_group = parser.add_mutually_exclusive_group()
+    preprocess_group.add_argument(
+        "--default-preprocess",
+        dest="preprocess_mode",
+        action="store_const",
+        const="default",
+        help="Apply adaptive default preprocessing (the default behavior).",
     )
-    parser.add_argument(
+    preprocess_group.add_argument(
+        "--custom-preprocess",
+        dest="preprocess_mode",
+        action="store_const",
+        const="custom",
+        help="Apply preprocessing with explicitly supplied QC thresholds.",
+    )
+    preprocess_group.add_argument(
         "--no-preprocess",
-        dest="preprocess",
-        action="store_false",
-        help="Disable preprocessing",
+        dest="preprocess_mode",
+        action="store_const",
+        const="none",
+        help="Skip preprocessing.",
     )
+    parser.set_defaults(preprocess_mode="default")
 
+    parser.add_argument("--min-genes", type=int, help="Minimum genes per cell")
+    parser.add_argument("--min-cells", type=int, help="Minimum cells per gene")
     parser.add_argument(
-        "--min-genes", type=int, default=1000, help="Min genes per cell"
-    )
-    parser.add_argument("--min-cells", type=int, default=10, help="Min cells per gene")
-    parser.add_argument(
-        "--max-mt-pct", type=float, default=20.0, help="Max mitochondrial percentage"
+        "--max-mt-pct", type=float, help="Maximum mitochondrial percentage"
     )
 
     parser.add_argument(
@@ -70,6 +78,22 @@ def main():
 
     args = parser.parse_args()
 
+    custom_qc_values = (args.min_genes, args.min_cells, args.max_mt_pct)
+    if args.preprocess_mode == "custom" and any(
+        value is None for value in custom_qc_values
+    ):
+        parser.error(
+            "--custom-preprocess requires --min-genes, --min-cells, and "
+            "--max-mt-pct."
+        )
+    if args.preprocess_mode != "custom" and any(
+        value is not None for value in custom_qc_values
+    ):
+        parser.error(
+            "--min-genes, --min-cells, and --max-mt-pct can only be used with "
+            "--custom-preprocess."
+        )
+
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
@@ -83,16 +107,19 @@ def main():
     adata = read_adata_file(args.dataset)
 
     # 2. Preprocess
-    if args.preprocess:
+    if args.preprocess_mode == "default":
+        adata = preprocess_adata(adata, do_scale=False)
+    elif args.preprocess_mode == "custom":
         adata = preprocess_adata(
             adata,
+            do_scale=False,
             min_genes=args.min_genes,
             min_cells=args.min_cells,
             max_mt_pct=args.max_mt_pct,
         )
 
     # 3. Load & Weight Network
-    priors = read_prior_network_file(args.priors)
+    priors = read_prior_network_file(args.prior_type)
     # 3.1 Filter to TFs with sufficient targets
     prior_fltd = priors[priors["target"].isin(set(adata.var_names))].copy()
     source_counts = prior_fltd["source"].value_counts()

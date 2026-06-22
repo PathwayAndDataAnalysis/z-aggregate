@@ -48,7 +48,8 @@ directory:
 uv run z-aggregate \
   --dataset ./dataset/example.h5ad \
   --prior-type collectri \
-  --output ./results
+  --output ./results \
+  --default-preprocess
 ```
 
 A fuller example is:
@@ -58,6 +59,7 @@ uv run z-aggregate \
   --dataset ./dataset/TianKampmann2021_CRISPRi.h5ad \
   --prior-type collectri \
   --output ./results \
+  --default-preprocess \
   --weight-type Uniform \
   --output-format both \
   --verbose
@@ -79,11 +81,12 @@ wget "https://zenodo.org/records/13350497/files/TianKampmann2021_CRISPRi.h5ad?do
 | `-p`, `--prior-type` | Yes | - | Prior network to use. Use a named prior such as `causalpath`, `collectri`, `dorothea`, or `ensemble`, or provide a custom file path. |
 | `-o`, `--output` | Yes | - | Directory where output files will be written. |
 | `--min-targets` | No | `5` | Minimum number of target genes required for a transcription factor to be included. |
-| `--preprocess` | No | Enabled | Apply standard preprocessing before running the method. |
-| `--no-preprocess` | No | - | Skip preprocessing. Use this when the input data are already filtered and normalized. |
-| `--min-genes` | No | `1000` | Minimum number of genes required per cell during preprocessing. |
-| `--min-cells` | No | `10` | Minimum number of cells required per gene during preprocessing. |
-| `--max-mt-pct` | No | `20.0` | Maximum mitochondrial read percentage allowed during preprocessing. |
+| `--default-preprocess` | No | Enabled | Apply adaptive default preprocessing. This is the default behavior. |
+| `--no-preprocess` | No | Disabled | Skip preprocessing when input data are already quality controlled, normalized, and transformed. |
+| `--custom-preprocess` | No | Disabled | Apply preprocessing with explicitly supplied QC thresholds. Requires `--min-genes`, `--min-cells`, and `--max-mt-pct`. |
+| `--min-genes` | With `--custom-preprocess` | - | Minimum number of genes required per cell during fixed-threshold preprocessing. |
+| `--min-cells` | With `--custom-preprocess` | - | Minimum number of cells required per gene during fixed-threshold preprocessing. |
+| `--max-mt-pct` | With `--custom-preprocess` | - | Maximum mitochondrial read percentage allowed during fixed-threshold preprocessing. |
 | `--weight-type` | No | `Uniform` | Weighting strategy for prior-network edges. |
 | `--output-format` | No | `both` | Output format: `tsv`, `csv`, `h5ad`, or `both`. With `both`, table files and an AnnData file are written. |
 | `-v`, `--verbose` | No | Disabled | Print more detailed log messages. |
@@ -137,13 +140,31 @@ Interaction values may be numeric, or may use terms such as
 
 ## Preprocessing
 
-Preprocessing is enabled by default. It performs:
+Adaptive default preprocessing runs unless `--custom-preprocess` or
+`--no-preprocess` is supplied. `--default-preprocess` may be used to state the
+default mode explicitly. The adaptive workflow:
 
-1. Cell filtering using `--min-genes`.
-2. Gene filtering using `--min-cells`.
-3. Mitochondrial-content filtering using `--max-mt-pct`.
-4. Library-size normalization to a target sum of 10,000.
-5. Log transformation.
+1. Cell names and gene names are stripped of surrounding whitespace, and
+   duplicate gene names are made unique.
+2. Cells are filtered when they express fewer than 1% of the dataset's genes;
+   genes are filtered when they are expressed in fewer than 0.1% of cells.
+3. Mitochondrial-content filtering uses `median + 3 × MAD`, with the cutoff
+   bounded between 10% and 25%.
+4. Counts are normalized to a target sum of 10,000 and log transformed.
+
+To choose fixed QC thresholds instead, use `--custom-preprocess` and provide all
+three required values:
+
+```bash
+uv run z-aggregate \
+  --dataset ./dataset/example.h5ad \
+  --prior-type collectri \
+  --output ./results \
+  --custom-preprocess \
+  --min-genes 1000 \
+  --min-cells 10 \
+  --max-mt-pct 20
+```
 
 Use `--no-preprocess` when the dataset has already been quality controlled,
 normalized, and transformed.

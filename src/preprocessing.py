@@ -4,6 +4,7 @@ import numpy as np
 import scanpy as sc
 from anndata import AnnData
 from scipy.sparse import issparse
+from scipy.stats import median_abs_deviation
 import logging
 from pathlib import Path
 import re
@@ -46,47 +47,121 @@ def read_adata_file(gene_exp_file: str) -> AnnData:
 
 
 def preprocess_adata(
-    adata: AnnData, min_genes=1000, min_cells=10, max_mt_pct=20.0
+    adata: AnnData,
+    do_scale: bool = False,
+    *,
+    min_genes: int | None = None,
+    min_cells: int | None = None,
+    max_mt_pct: float | None = None,
 ) -> AnnData:
-    logger.info("Starting Preprocessing...")
-    n_cells_init, n_genes_init = adata.shape
+    """Preprocess an AnnData object with adaptive or user-supplied QC thresholds.
 
-    # Filter Cells
-    sc.pp.filter_cells(adata, min_genes=min_genes)
-    n_cells_step1 = adata.n_obs
-    logger.info(
-        f"   Filtered cells (min_genes={min_genes}): Removed {n_cells_init - n_cells_step1} cells."
+    When no QC thresholds are supplied, adaptive thresholds are used: cells and
+    genes are filtered at 1% and 0.1% detection rates, respectively, and the
+    mitochondrial cutoff is median + 3 MAD, bounded to 10--25%. Supplying all
+    three thresholds selects fixed-threshold preprocessing instead.
+    """
+    thresholds = (min_genes, min_cells, max_mt_pct)
+    if all(value is None for value in thresholds):
+        n_cells, n_genes = adata.shape
+        return _run_preprocessing(
+            adata,
+            min_genes=int(0.01 * n_genes),
+            min_cells=int(0.001 * n_cells),
+            max_mt_pct=None,
+            do_scale=do_scale,
+            clean_names=True,
+        )
+
+    if any(value is None for value in thresholds):
+        raise ValueError(
+            "Fixed-threshold preprocessing requires min_genes, min_cells, "
+            "and max_mt_pct."
+        )
+
+    return _preprocess_with_fixed_thresholds(
+        adata,
+        do_scale=do_scale,
+        min_genes=min_genes,
+        min_cells=min_cells,
+        max_mt_pct=max_mt_pct,
     )
 
-    # Filter Genes
-    sc.pp.filter_genes(adata, min_cells=min_cells)
-    n_genes_step1 = adata.n_vars
-    logger.info(
-        f"   Filtered genes (min_cells={min_cells}): Removed {n_genes_init - n_genes_step1} genes."
+
+def _preprocess_with_fixed_thresholds(
+    adata: AnnData,
+    *,
+    do_scale: bool,
+    min_genes: int,
+    min_cells: int,
+    max_mt_pct: float,
+) -> AnnData:
+    """Apply preprocessing with explicitly supplied QC thresholds."""
+    return _run_preprocessing(
+        adata,
+        min_genes=min_genes,
+        min_cells=min_cells,
+        max_mt_pct=max_mt_pct,
+        do_scale=do_scale,
+        clean_names=False,
     )
 
-    # Mito Filter
-    adata.var["mt"] = adata.var_names.str.startswith(("MT-", "mt-"))
+
+def _run_preprocessing(
+    adata: AnnData,
+    *,
+    min_genes: int,
+    min_cells: int,
+    max_mt_pct: float | None,
+    do_scale: bool,
+    clean_names: bool,
+) -> AnnData:
+    """Apply common filtering, transformation, and optional scaling steps."""
+    adata_copy = adata.copy()
+    if clean_names:
+        adata_copy.obs_names = pd.Index(adata_copy.obs_names.astype(str)).str.strip()
+        adata_copy.var_names = pd.Index(adata_copy.var_names.astype(str)).str.strip()
+        adata_copy.var_names_make_unique()
+
+    mode = "adaptive" if max_mt_pct is None else "fixed-threshold"
+    logger.info("Starting %s preprocessing. Initial shape: %s", mode, adata_copy.shape)
+
+    sc.pp.filter_cells(adata_copy, min_genes=min_genes)
+    sc.pp.filter_genes(adata_copy, min_cells=min_cells)
+    logger.info("Shape after basic filtering: %s", adata_copy.shape)
+
+    adata_copy.var["mt"] = adata_copy.var_names.str.upper().str.startswith("MT-")
     sc.pp.calculate_qc_metrics(
-        adata, qc_vars=["mt"], percent_top=None, log1p=False, inplace=True
+        adata_copy, qc_vars=["mt"], percent_top=None, log1p=False, inplace=True
     )
 
-    n_cells_pre_mt = adata.n_obs
-    adata = adata[adata.obs["pct_counts_mt"] < max_mt_pct, :].copy()
-    n_cells_post_mt = adata.n_obs
+    if max_mt_pct is None:
+        mt_pcts = adata_copy.obs["pct_counts_mt"].values
+        median_mt = np.median(mt_pcts)
+        mad_mt = median_abs_deviation(mt_pcts, scale="normal")
+        max_mt_pct = min(max(median_mt + (3 * mad_mt), 10.0), 25.0)
+        logger.info(
+            "Adaptive mitochondrial cutoff: median=%.2f%%, MAD=%.2f%%, cutoff=%.2f%%.",
+            median_mt,
+            mad_mt,
+            max_mt_pct,
+        )
 
+    cells_before = adata_copy.n_obs
+    adata_copy = adata_copy[adata_copy.obs["pct_counts_mt"] < max_mt_pct].copy()
     logger.info(
-        f"   Mitochondrial filter (<{max_mt_pct}%): Removed {n_cells_pre_mt - n_cells_post_mt} cells."
+        "Mitochondrial filter (<%s%%): removed %s cells.",
+        max_mt_pct,
+        cells_before - adata_copy.n_obs,
     )
 
-    # Normalize & Log
-    sc.pp.normalize_total(adata, target_sum=1e4)
-    sc.pp.log1p(adata)
+    sc.pp.normalize_total(adata_copy, target_sum=1e4)
+    sc.pp.log1p(adata_copy)
+    if do_scale:
+        sc.pp.scale(adata_copy)
 
-    logger.info(
-        f"Preprocessing complete. Final shape: {adata.n_obs} cells x {adata.n_vars} genes"
-    )
-    return adata
+    logger.info("Preprocessing complete. Final shape: %s", adata_copy.shape)
+    return adata_copy
 
 
 def read_prior_network_file(prior_type: str) -> pd.DataFrame:
