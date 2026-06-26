@@ -50,6 +50,13 @@ Install the project dependencies:
 uv sync
 ```
 
+Build the project:
+
+```bash
+uv build
+```
+
+
 ## Quick Start
 
 Run `z-aggregate` with an expression dataset, a prior network, and an output
