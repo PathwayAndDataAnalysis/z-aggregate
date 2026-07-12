@@ -296,16 +296,6 @@ def compute_network_weights(
 ) -> pd.DataFrame:
     logger.info(f"Computing weights using strategy: {weight_type.value}")
 
-    if weight_type == WeightType.UNIFORM:
-        logger.info(
-            "   Uniform weights: using interaction as weight (no overlap filtering)."
-        )
-        net = prior_network.copy()
-        net["weight"] = net["interaction"]
-        net = net[["source", "interaction", "target", "weight"]].fillna(0.0)
-        logger.info("   Weights computed successfully.")
-        return net
-
     initial_edges = len(prior_network)
     mask = prior_network["target"].isin(set(adata.var_names))
     net = prior_network[mask].copy()
@@ -331,7 +321,11 @@ def compute_network_weights(
         )
         raise ValueError(error_msg)
 
-    if weight_type == WeightType.CORRELATION:
+    if weight_type == WeightType.UNIFORM:
+        logger.info("   Uniform weights: assigning magnitude 1 to every edge.")
+        net["weight"] = 1.0
+
+    elif weight_type == WeightType.CORRELATION:
         logger.info("   Calculating Spearman correlations (TF mRNA vs Target mRNA)...")
         tf_target_corr = {}
         unique_tfs = net["source"].unique()
@@ -357,16 +351,21 @@ def compute_network_weights(
             corrs = df_temp.corrwith(pd.Series(tf_vec), method="spearman")
             tf_target_corr[tf] = corrs.to_dict()
 
-        net["weight"] = net.apply(
+        correlations = net.apply(
             lambda row: tf_target_corr.get(row["source"], {}).get(row["target"], 0.0),
             axis=1,
         )
+        correlations = pd.to_numeric(correlations, errors="coerce").fillna(0.0)
+
+        # Replace the prior direction with sign(rho). A zero magnitude removes undefined/zero correlations.
+        nonzero = correlations != 0
+        net.loc[nonzero, "interaction"] = np.sign(correlations.loc[nonzero]).astype(int)
+        net["weight"] = correlations.abs()
 
     elif weight_type == WeightType.SPECIFICITY:
         logger.info("   Calculating specificity weights (1 / TF_count per gene)...")
         target_counts = net.groupby("target")["source"].transform("count")
         net["weight"] = 1.0 / target_counts
-        net["weight"] = net["weight"] * net["interaction"]
 
     elif weight_type == WeightType.NON_ZERO_RATE:
         logger.info("   Calculating nonzero rate weights...")
@@ -376,7 +375,7 @@ def compute_network_weights(
         else:
             detection_rates = (adata.X > 0).sum(axis=0) / n_cells
         gene_reliability_map = dict(zip(adata.var_names, detection_rates))
-        net["weight"] = net["target"].map(gene_reliability_map) * net["interaction"]
+        net["weight"] = net["target"].map(gene_reliability_map)
 
     elif weight_type == WeightType.EXISTING:
         if "weight" not in net.columns:
@@ -389,7 +388,17 @@ def compute_network_weights(
     else:
         raise ValueError(f"Unknown weight type: {weight_type}")
 
-    net = net[["source", "interaction", "target", "weight"]].fillna(0.0)
+    net = net[["source", "interaction", "target", "weight"]].copy()
+    net["interaction"] = pd.to_numeric(net["interaction"], errors="raise")
+    net["weight"] = pd.to_numeric(net["weight"], errors="coerce").fillna(0.0)
+
+    if (~net["interaction"].isin((-1, 1))).any():
+        raise ValueError("Network interactions must be -1 or +1.")
+    if (~np.isfinite(net["weight"])).any() or (net["weight"] < 0).any():
+        raise ValueError("Network weight magnitudes must be finite and non-negative.")
+
+    net["interaction"] = net["interaction"].astype(int)
+    net["weight"] = net["weight"].astype(float)
     logger.info("   Weights computed successfully.")
     return net
 

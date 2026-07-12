@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import scanpy as sc
 import logging
 from anndata import AnnData
 from scipy.sparse import csr_matrix, issparse
@@ -33,8 +32,18 @@ def run_z_aggregate(adata: AnnData, priors: pd.DataFrame, min_targets: int) -> t
 
     pri["interaction"] = pd.to_numeric(pri["interaction"], errors="raise")
     pri["weight"] = pd.to_numeric(pri["weight"], errors="raise")
+
+    if not pri["interaction"].isin((-1, 1)).all():
+        raise ValueError("Prior interactions must be -1 or +1.")
+    if (~np.isfinite(pri["weight"])).any() or (pri["weight"] < 0).any():
+        raise ValueError("Prior weights must be finite, non-negative magnitudes.")
+
+    pri = pri[pri["weight"] > 0].copy()
+
+    # Apply the regulatory direction
     pri["signed_weight"] = pri["weight"] * pri["interaction"]
     pri = pri.groupby(["source", "target"], as_index=False)["signed_weight"].sum()
+    pri = pri[pri["signed_weight"] != 0].copy()
 
     # Count usable unique targets per TF after dataset intersection
     tf_counts = pri.groupby("source")["target"].nunique()

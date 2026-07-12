@@ -70,9 +70,9 @@ def main():
     )
     parser.add_argument(
         "--output-format",
-        choices=["tsv", "csv", "h5ad", "both"],
+        choices=["tsv", "csv", "parquet", "h5ad", "both", "all"],
         default="both",
-        help="Output file format",
+        help="Output format; 'both' writes TSV and H5AD, 'all' writes every format.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Increase output verbosity")
 
@@ -153,21 +153,28 @@ def main():
         else args.prior_type
     )
 
-    if args.output_format in ("tsv", "csv", "both"):
-        format_to_write = (
-            "tsv" if args.output_format == "both" else [args.output_format]
-        )
-        sep = "\t" if format_to_write == "tsv" else ","
+    weight_prefix = WeightType(args.weight_type).name
 
-        scores_file_name = (
-            out_dir
-            / f"{result_prefix}_{prior_prefix}_z-aggregate_scores.{format_to_write}"
-        )
-        pvalues_file_name = (
-            out_dir / f"{result_prefix}_{prior_prefix}_z-aggregate_pvalues.{format_to_write}"
-        )
-        scores.to_csv(scores_file_name, sep=sep)
-        pvalues.to_csv(pvalues_file_name, sep=sep)
+    table_formats = {
+        "tsv": ["tsv"],
+        "csv": ["csv"],
+        "parquet": ["parquet"],
+        "both": ["tsv"],
+        "all": ["tsv", "csv", "parquet"],
+    }.get(args.output_format, [])
+
+    for format_to_write in table_formats:
+        sep = "\t" if format_to_write == "tsv" else ","
+        stem = f"{result_prefix}_z-aggregate_{prior_prefix}_{weight_prefix}"
+        scores_file_name = out_dir / f"{stem}.{format_to_write}"
+        pvalues_file_name = out_dir / f"{stem}_pvalues.{format_to_write}"
+
+        if format_to_write == "parquet":
+            scores.to_parquet(scores_file_name, engine="pyarrow")
+            pvalues.to_parquet(pvalues_file_name, engine="pyarrow")
+        else:
+            scores.to_csv(scores_file_name, sep=sep)
+            pvalues.to_csv(pvalues_file_name, sep=sep)
 
         logging.info(
             f"Saved z-aggregate scores (cells={scores.shape[0]}, TFs={scores.shape[1]}) "
@@ -178,7 +185,7 @@ def main():
             f"to {pvalues_file_name}"
         )
 
-    if args.output_format in ("h5ad", "both"):
+    if args.output_format in ("h5ad", "both", "all"):
         adata_out = adata.copy()
 
         score_key = "z-aggregate_scores"
@@ -187,7 +194,10 @@ def main():
         adata_out.obsm[score_key] = scores
         adata_out.obsm[pval_key] = pvalues
 
-        h5ad_filename = out_dir / f"{result_prefix}_z-aggregate_results.h5ad"
+        h5ad_filename = (
+            out_dir
+            / f"{result_prefix}_z-aggregate_{prior_prefix}_{weight_prefix}_results.h5ad"
+        )
         adata_out.write_h5ad(h5ad_filename)
 
         logging.info(
