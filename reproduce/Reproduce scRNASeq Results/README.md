@@ -9,6 +9,7 @@ zscore, and also evaluates prior-network and edge-weighting choices.
 ```text
 Reproduce scRNASeq Results/
   scRNASeq/        input .h5ad datasets
+  priors/          prior-network TSV files used by run_methods.ipynb
   scores/         generated activity-score parquet files
   common_tfs/     common TF lists for prior-network comparisons
   results/        generated statistics, plots, and supplementary tables
@@ -19,6 +20,16 @@ The notebooks discover input datasets from:
 
 ```text
 scRNASeq/*.h5ad
+```
+
+## Setup
+
+From the repository root, install the locked Python 3.12 environment and start
+Jupyter with:
+
+```bash
+uv sync
+uv run jupyter lab
 ```
 
 ## Recommended Workflow
@@ -40,6 +51,9 @@ It generates:
 - z-aggregate scores with multiple weighting strategies.
 - VIPER, ULM, and zscore activity scores through Decoupler.
 
+The optional Zenodo download cell is disabled by default. Set
+`download_missing_datasets = True` only if you want the notebook to download
+missing `.h5ad` files.
 
 ### 2. Run Statistical Tests
 

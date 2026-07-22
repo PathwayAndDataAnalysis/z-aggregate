@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import warnings
 from pathlib import Path
 from typing import Dict, List
@@ -19,7 +20,12 @@ from sklearn.metrics import (
     roc_curve,
 )
 from tqdm.auto import tqdm
-from utility_functions import (
+ANALYSIS_DIR = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = ANALYSIS_DIR / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from utility_functions import (  # noqa: E402
     get_single_perturbation,
     load_adata_files_with_params,
     preprocess_adata,
@@ -28,39 +34,43 @@ from utility_functions import (
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-DATASET_DIR = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data/scRNASeq")
-BASE_RESULT_DIR = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data/scores")
-OUTPUT_PLOT_DIR = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data/Weights_ROC_PR_Plots")
+DATASET_DIR = ANALYSIS_DIR / "scRNASeq"
+BASE_RESULT_DIR = ANALYSIS_DIR / "scores"
+OUTPUT_PLOT_DIR = ANALYSIS_DIR / "results" / "Weights_ROC_plots"
 
 PRIOR_TYPE = "causalpath"
 RUN_TAG = f"{PRIOR_TYPE}_weight-strategies"
 
 METHOD_STYLES = {
     "z-aggregate_UNIFORM": {
-        "label": "Uniform",
+        "label": "uniform",
         "color": "#0072B2",
     },
     "z-aggregate_CORRELATION": {
-        "label": "Correlation",
+        "label": "correlation",
         "color": "#009E73",
     },
     "z-aggregate_SPECIFICITY": {
-        "label": "Specificity",
+        "label": "specificity",
         "color": "#E69F00",
     },
     "z-aggregate_NONZERORATE": {
-        "label": "Non-zero rate",
+        "label": "nonzero-rate",
         "color": "#CC79A7",
     },
 }
 
 REQUIRED_METHODS = list(METHOD_STYLES)
 
-MIN_POS_CELLS = 5
-MIN_NEG_CELLS = 5
+MIN_POS_CELLS = 2
+MIN_NEG_CELLS = 2
 SAVE_FORMAT = "svg"  # png or svg
 DPI = 300
 
+
+# =========================================================
+# Helpers
+# =========================================================
 def sanitize_filename(text: str) -> str:
     text = str(text)
     text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
@@ -89,7 +99,9 @@ def load_method_scores(
 
     score_prefix = f"{dataset_name}_z-aggregate_{PRIOR_TYPE}_"
     score_files = [
-        path for path in output_dir.iterdir() if path.suffix == ".parquet" and path.name.startswith(score_prefix)
+        path
+        for path in output_dir.iterdir()
+        if path.suffix == ".parquet" and path.name.startswith(score_prefix) and "pvalue" not in path.name.lower()
     ]
 
     method_scores: Dict[str, pd.DataFrame] = {}
@@ -139,7 +151,7 @@ def compute_curves(y_true: np.ndarray, y_score: np.ndarray) -> dict:
     precision, recall, _ = precision_recall_curve(y_true, y_score)
 
     baseline_ap = float(y_true.mean())
-    ap_lift = ap - baseline_ap
+    ap_lift = ap / baseline_ap if baseline_ap > 0 else np.nan
 
     return {
         "roc_auc": float(roc_auc),
@@ -160,6 +172,9 @@ def make_plot_directories(dataset_plot_dir: Path) -> None:
     (dataset_plot_dir / "pr").mkdir(parents=True, exist_ok=True)
 
 
+# =========================================================
+# Plotting
+# =========================================================
 def plot_roc_curve_for_tf(
     dataset_name: str,
     tf: str,
@@ -242,6 +257,9 @@ def plot_pr_curve_for_tf(
     plt.close()
 
 
+# =========================================================
+# TF evaluation
+# =========================================================
 def get_shared_cells(
     tf: str,
     selected_cells: pd.Index,
@@ -361,6 +379,9 @@ def evaluate_tf(
     return rows
 
 
+# =========================================================
+# Main
+# =========================================================
 def main() -> None:
     set_publication_style()
     OUTPUT_PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -370,6 +391,11 @@ def main() -> None:
     all_rows: List[dict] = []
 
     for dataset_name in dataset_names:
+        dataset_path = DATASET_DIR / f"{dataset_name}.h5ad"
+        if not dataset_path.is_file():
+            print(f"Skipping {dataset_name}: missing {dataset_path}")
+            continue
+
         params = adata_files_with_params[dataset_name]
         is_activation = params["is_activation"]
         common_tfs = params["common_perturbed_tfs"]

@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import gc
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 from tqdm.auto import tqdm
 
-from utility_functions import (
+ANALYSIS_DIR = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = ANALYSIS_DIR / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from utility_functions import (  # noqa: E402
     read_adata_file,
     preprocess_adata,
     get_single_perturbation,
@@ -21,11 +27,9 @@ from utility_functions import (
     normalize_index,
 )
 
-SCRATCH_ROOT = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data")
-ADATA_DIR = SCRATCH_ROOT / "scRNASeq"
-SCORES_DIR = SCRATCH_ROOT / "scores"
-
-OUT_DIR = SCRATCH_ROOT / "Weights_MWU-Delongs"
+ADATA_DIR = ANALYSIS_DIR / "scRNASeq"
+SCORES_DIR = ANALYSIS_DIR / "scores"
+OUT_DIR = ANALYSIS_DIR / "results" / "Weights_MWU-Delongs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 PRIOR_TYPE = "causalpath"
@@ -64,7 +68,6 @@ MWU_COLS = [
 DELONG_COLS = [
     "Dataset",
     "TF",
-    "Mode",
     "Top_Weight",
     "Top_ROC_AUC",
     "Top_MWU_Adjusted_P_Value",
@@ -216,6 +219,7 @@ def compute_mwu_for_dataset(
 
     df = pd.DataFrame(rows)
 
+    # Dataset-level BH correction, separately within each weight strategy.
     df = bh_correct_by_method(
         df,
         methods=WEIGHTS,
@@ -286,6 +290,9 @@ def compute_delong_top2_for_dataset(
         if np.unique(y).size < 2:
             continue
 
+        # Direction correction:
+        # CRISPRa: higher score = stronger perturbation.
+        # CRISPRi: lower score = stronger perturbation, so flip.
         if not params["is_activation"]:
             score_mat = -score_mat
 
@@ -331,6 +338,9 @@ def compute_delong_top2_for_dataset(
         top_mwu_adj = float(mwu_lookup.loc[top_key, "Adjusted_P_Value"])
         top_mwu_sig = bool(mwu_lookup.loc[top_key, "Significant_FDR_BH"])
 
+        # Required rule:
+        # Run DeLong only if the top ROC-AUC weight is MWU-significant after BH.
+        # The second-best weight does not need to be MWU-significant.
         if not top_mwu_sig:
             continue
 
@@ -372,7 +382,8 @@ def correct_delong_by_dataset(delong_raw: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=DELONG_COLS)
 
     corrected_frames: list[pd.DataFrame] = []
-    
+
+    # Dataset-level BH correction for DeLong p-values.
     for _, dataset_df in delong_raw.groupby("Dataset", sort=True):
         dataset_df = apply_fdr_bh(
             dataset_df,

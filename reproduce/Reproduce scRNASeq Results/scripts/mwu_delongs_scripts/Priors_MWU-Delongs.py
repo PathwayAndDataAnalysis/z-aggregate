@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import gc
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 from tqdm.auto import tqdm
 
-from utility_functions import (
+ANALYSIS_DIR = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = ANALYSIS_DIR / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from utility_functions import (  # noqa: E402
     read_adata_file,
     preprocess_adata,
     get_single_perturbation,
@@ -21,10 +27,9 @@ from utility_functions import (
     normalize_index,
 )
 
-SCRATCH_ROOT = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data")
-ADATA_DIR = SCRATCH_ROOT / "scRNASeq"
-SCORES_DIR = SCRATCH_ROOT / "scores"
-RESULT_ROOT = SCRATCH_ROOT / "Priors_MWU-Delongs"
+ADATA_DIR = ANALYSIS_DIR / "scRNASeq"
+SCORES_DIR = ANALYSIS_DIR / "scores"
+RESULT_ROOT = ANALYSIS_DIR / "results" / "Priors_MWU-Delongs"
 RESULT_ROOT.mkdir(parents=True, exist_ok=True)
 
 METHOD_NAME = "z-aggregate"

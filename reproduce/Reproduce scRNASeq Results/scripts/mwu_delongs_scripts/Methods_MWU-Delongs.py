@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import gc
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 from tqdm.auto import tqdm
 
-from utility_functions import (
+ANALYSIS_DIR = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = ANALYSIS_DIR / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from utility_functions import (  # noqa: E402
     read_adata_file,
     preprocess_adata,
     get_single_perturbation,
@@ -21,12 +27,9 @@ from utility_functions import (
     normalize_index,
 )
 
-SCRATCH_ROOT = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data")
-ADATA_DIR = SCRATCH_ROOT / "scRNASeq"
-SCORES_DIR = SCRATCH_ROOT / "scores"
-
-
-OUT_DIR = SCRATCH_ROOT / "Methods_MWU-Delongs"
+ADATA_DIR = ANALYSIS_DIR / "scRNASeq"
+SCORES_DIR = ANALYSIS_DIR / "scores"
+OUT_DIR = ANALYSIS_DIR / "results" / "Methods_MWU-Delongs"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 PRIOR_TYPE = "causalpath"
@@ -37,13 +40,6 @@ DELONG_ALPHA = 0.1
 MIN_PVALUE = 1e-300
 
 REQUIRED_METHODS = ["z-aggregate", "viper", "ulm", "zscore"]
-
-METHOD_FILE_PATTERNS = {
-    "z-aggregate": [f"*z-aggregate*{PRIOR_TYPE}*{WEIGHT_TYPE}*.parquet"],
-    "viper": [f"*viper*{PRIOR_TYPE}*{WEIGHT_TYPE}*.parquet"],
-    "ulm": [f"*ulm*{PRIOR_TYPE}*{WEIGHT_TYPE}*.parquet"],
-    "zscore": [f"*zscore*{PRIOR_TYPE}*{WEIGHT_TYPE}*.parquet"],
-}
 
 MWU_COLS = [
     "Dataset",
@@ -92,6 +88,7 @@ def load_method_scores(
     tf_list: list[str],
 ) -> dict[str, pd.DataFrame] | None:
     score_dir = SCORES_DIR / dataset_name
+
     if not score_dir.exists():
         print(f"Skipping {dataset_name}: missing score directory {score_dir}")
         return None
@@ -99,20 +96,21 @@ def load_method_scores(
     scores: dict[str, pd.DataFrame] = {}
 
     for method_name in REQUIRED_METHODS:
-        matches: list[Path] = []
-        for pattern in METHOD_FILE_PATTERNS[method_name]:
-            matches.extend(sorted(score_dir.glob(pattern)))
+        filename = f"{dataset_name}_{method_name}_{PRIOR_TYPE}_{WEIGHT_TYPE}.parquet"
+        path = score_dir / filename
 
-        matches = sorted(set(matches), key=lambda path: (len(path.name), path.name))
-        if not matches:
-            print(f"Skipping {dataset_name}: missing score file for {method_name}")
+        if not path.exists():
+            print(f"Skipping {dataset_name}: missing score file for {method_name}: {filename}")
             return None
 
-        path = matches[0]
         df = pd.read_parquet(path)
         df.index = normalize_index(df.index)
         df.columns = normalize_index(df.columns)
-        scores[method_name] = df.reindex(columns=tf_list, fill_value=np.nan)
+
+        scores[method_name] = df.reindex(
+            columns=tf_list,
+            fill_value=np.nan,
+        )
 
         print(f"  loaded {method_name}: {path.name}")
 
@@ -281,6 +279,9 @@ def compute_delong_top2_for_dataset(
         if np.unique(y).size < 2:
             continue
 
+        # Direction correction for ROC/DeLong:
+        # CRISPRa: higher score = stronger perturbation.
+        # CRISPRi: lower score = stronger perturbation, so flip.
         if not params["is_activation"]:
             score_mat = -score_mat
 
@@ -324,6 +325,9 @@ def compute_delong_top2_for_dataset(
         top_mwu_adj = float(mwu_lookup.loc[top_key, "Adjusted_P_Value"])
         top_mwu_sig = bool(mwu_lookup.loc[top_key, "Significant_FDR_BH"])
 
+        # Required rule:
+        # Run DeLong only if the top ROC method is significant in MWU after BH.
+        # The second method does not need to be MWU-significant.
         if not top_mwu_sig:
             continue
 

@@ -251,7 +251,7 @@ def read_prior_network_file(prior_type: str) -> pd.DataFrame:
         "upregulates-expression": 1,
         "downregulates-expression": -1,
         "upregulates": 1,
-        "downregulates": -1
+        "downregulates": -1,
     }
 
     interaction = df["interaction"]
@@ -401,56 +401,3 @@ def compute_network_weights(
     net["weight"] = net["weight"].astype(float)
     logger.info("   Weights computed successfully.")
     return net
-
-
-def get_single_perturbation(label):
-    CONTROL_RE = re.compile(
-        r"^(?:control|ctrl|negctrl|negative[_ -]?control|non[_ -]?targeting|ntc|nt)$",
-        re.IGNORECASE,
-    )
-    GUIDE_RE = re.compile(r"^(?:g\d+|\d+)$", re.IGNORECASE)
-
-    def is_control_token(s: str) -> bool:
-        return bool(CONTROL_RE.fullmatch(str(s).strip()))
-
-    if pd.isna(label):
-        return "control"
-
-    label = str(label).strip()
-    if not label or label.lower() == "nan":
-        return "control"
-
-    # Remove trailing guide ID like _g1 or _1 for whole-label control cases
-    label_no_guide = re.sub(r"_(?:g\d+|\d+)$", "", label, flags=re.IGNORECASE)
-
-    if is_control_token(label_no_guide):
-        return "control"
-
-    parts = label.split("_")
-
-    if len(parts) == 1:
-        return re.sub(r"g\d+$", "", parts[0], flags=re.IGNORECASE)
-
-    if len(parts) != 2:
-        return None
-
-    p1, p2 = parts
-
-    # Case: TP53_g1 or TP53_1
-    if GUIDE_RE.fullmatch(p2):
-        base = re.sub(r"g\d+$", "", p1, flags=re.IGNORECASE)
-        return "control" if is_control_token(base) else base
-
-    p1_ctrl = is_control_token(p1)
-    p2_ctrl = is_control_token(p2)
-
-    if p1_ctrl and p2_ctrl:
-        return "control"
-    if p1_ctrl and not p2_ctrl:
-        return p2
-    if p2_ctrl and not p1_ctrl:
-        return p1
-    if p1 == p2:
-        return p1
-
-    return None

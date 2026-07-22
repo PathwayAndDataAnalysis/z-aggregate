@@ -10,33 +10,33 @@ from anndata import AnnData
 from scipy.stats import median_abs_deviation
 from enum import Enum
 from scipy.sparse import issparse
-import decoupler as dc
 import re
 from tqdm import tqdm
 import seaborn as sns
 import matplotlib.pyplot as plt
-import ast
 from typing import Dict
 from scipy import stats
 from scipy.stats import mannwhitneyu
 from statsmodels.stats.multitest import multipletests
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-PROJECT_ROOT = "/pomplun/share_home/kisan.thapa001/apps/z_agg"
-
 ACTIVATED_DATASETS = {"TianKampmann2021_CRISPRa", "NormanWeissman2019_filtered"}
-COMMON_TF_DIR = "/pomplun/share_home/kisan.thapa001/apps/z_agg/data/common_tfs"
+ANALYSIS_DIR = Path(__file__).resolve().parent.parent
+PRIOR_DIR = ANALYSIS_DIR / "priors"
+COMMON_TF_DIR = ANALYSIS_DIR / "common_tfs"
 
 
 class WeightType(str, Enum):
-    UNIFORM = "Uniform"
-    CORRELATION = "Correlation"
-    SPECIFICITY = "Specificity"
-    NON_ZERO_RATE = "NonzeroRate"
-    EXISTING = "Existing"
+    UNIFORM = "UNIFORM"
+    CORRELATION = "CORRELATION"
+    SPECIFICITY = "SPECIFICITY"
+    NONZERORATE = "NONZERORATE"
+    EXISTING = "EXISTING"
 
 
 def save_tsv(df: pd.DataFrame, path: Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, sep="\t", index=False)
     print(f"saved: {path}")
 
@@ -142,11 +142,11 @@ def get_single_perturbation(label):
         return bool(CONTROL_RE.fullmatch(str(s).strip()))
 
     if pd.isna(label):
-        return "control"
+        return None
 
     label = str(label).strip()
     if not label or label.lower() == "nan":
-        return "control"
+        return None
 
     # Remove trailing guide ID like _g1 or _1 for whole-label control cases
     label_no_guide = re.sub(r"_(?:g\d+|\d+)$", "", label, flags=re.IGNORECASE)
@@ -164,6 +164,7 @@ def get_single_perturbation(label):
 
     p1, p2 = parts
 
+    # Case: TP53_g1 or TP53_1
     if GUIDE_RE.fullmatch(p2):
         base = re.sub(r"g\d+$", "", p1, flags=re.IGNORECASE)
         return "control" if is_control_token(base) else base
@@ -184,75 +185,127 @@ def get_single_perturbation(label):
 
 
 def read_prior_network_file(prior_type: str) -> pd.DataFrame:
-    if prior_type == "causalpath":
-        prior_file = PROJECT_ROOT + "/data/priors/causalpath.tsv"
-        df = pd.read_csv(
-            prior_file,
-            sep="\t",
-            header=None,
-            names=["source", "interaction", "target"],
+    """
+    Load prior network from local files.
+
+    Supported:
+      - causalpath
+      - collectri
+      - dorothea
+      - ensemble
+      - custom file path
+
+    Expected output:
+      source | interaction | target
+    """
+
+    prior_files = {
+        "causalpath": PRIOR_DIR / "causalpath.tsv",
+        "collectri": PRIOR_DIR / "collectri.tsv",
+        "dorothea": PRIOR_DIR / "dorothea.tsv",
+        "ensemble": PRIOR_DIR / "ensemble.tsv",
+    }
+
+    if prior_type in prior_files:
+        prior_file = prior_files[prior_type]
+    elif Path(prior_type).is_file():
+        prior_file = Path(prior_type)
+    else:
+        raise ValueError(
+            f"Unsupported prior_type: {prior_type}. "
+            f"Use causalpath, collectri, dorothea, ensemble, or provide a valid file path."
         )
 
-    elif prior_type == "collectri":
-        collectri = dc.op.collectri(organism="human", license="academic")
-        df = collectri[["source", "target", "weight"]].copy()
-        df = df[~df["target"].str.startswith("hsa-", na=False)]
-        df.rename(columns={"weight": "interaction"}, inplace=True)
+    sep = "\t" if prior_file.suffix.lower() in [".tsv", ".txt"] else ","
 
-    elif prior_type == "dorothea":
-        dorothea = dc.op.dorothea(organism="human", license="academic")
-        df = dorothea[["source", "target", "weight"]].copy()
-        df.rename(columns={"weight": "interaction"}, inplace=True)
+    with open(prior_file, "r") as f:
+        first_line = f.readline().lower().strip()
 
-    elif prior_type == "ensemble":
-        prior_file = PROJECT_ROOT + "/data/priors/ensemble.tsv"
-        df = pd.read_csv(
-            prior_file,
-            sep="\t",
-            header=None,
-            names=["source", "interaction", "target"],
+    has_header = ("source" in first_line and "target" in first_line) or (
+        "tf" in first_line and "gene" in first_line
+    )
+
+    if has_header:
+        df = pd.read_csv(prior_file, sep=sep)
+        df.columns = (
+            df.columns.astype(str)
+            .str.lower()
+            .str.strip()
+            .str.replace(" ", "_", regex=False)
         )
 
-    elif os.path.exists(prior_type):
-        with open(prior_type, "r") as f:
-            first_line = f.readline().lower()
-        if "source" in first_line and "target" in first_line:
-            df = pd.read_csv(prior_type, sep="\t")
-            df.columns = df.columns.str.lower()
-        else:
-            df = pd.read_csv(prior_type, sep="\t", header=None)
-            if df.shape[1] == 3:
-                df.columns = ["source", "interaction", "target"]
-            elif df.shape[1] >= 4:
-                df = df.iloc[:, :4]
-                df.columns = ["source", "interaction", "target", "weight"]
+        df = df.rename(
+            columns={
+                "tf": "source",
+                "regulator": "source",
+                "gene": "target",
+                "target_gene": "target",
+                "mor": "interaction",
+                "mode": "interaction",
+                "direction": "interaction",
+                "effect": "interaction",
+                "sign": "interaction",
+            }
+        )
+        if "interaction" not in df.columns and "weight" in df.columns:
+            df = df.rename(columns={"weight": "interaction"})
 
     else:
-        raise ValueError(f"Unsupported prior type: {prior_type}")
+        df = pd.read_csv(prior_file, sep=sep, header=None)
+        if df.shape[1] == 3:
+            df.columns = ["source", "interaction", "target"]
+        elif df.shape[1] >= 4:
+            df = df.iloc[:, :4]
+            df.columns = ["source", "interaction", "target", "weight"]
+        else:
+            raise ValueError(
+                f"Unexpected prior file format. Expected 3 or 4 columns, got {df.shape[1]}."
+            )
+
+    required_cols = {"source", "interaction", "target"}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"Missing required columns. Found columns: {list(df.columns)}")
 
     interaction_map = {
         "upregulates-expression": 1,
         "downregulates-expression": -1,
-        "up": 1,
-        "down": -1,
+        "upregulates": 1,
+        "downregulates": -1,
     }
 
-    col = df["interaction"]
-    # handle strings
-    if col.dtype == "object":
-        col = col.astype(str).str.lower().str.strip()
-        col = col.replace(interaction_map)
+    interaction = df["interaction"]
 
-    col = pd.to_numeric(col, errors="coerce")
-    col = np.sign(col)
-    col = col.replace(0, np.nan)
-    df["interaction"] = col.astype("Int64")
+    if interaction.dtype == "object":
+        normalized = interaction.astype(str).str.lower().str.strip()
+        interaction = normalized.map(interaction_map).where(
+            normalized.isin(interaction_map), normalized
+        )
+
+    interaction = pd.to_numeric(interaction, errors="coerce")
+    interaction = np.sign(interaction)
+    interaction = pd.Series(interaction, index=df.index).replace(0, np.nan)
+
+    df["interaction"] = interaction
+
+    df["source"] = df["source"].astype(str).str.strip()
+    df["target"] = df["target"].astype(str).str.strip()
+
     cols_to_keep = ["source", "interaction", "target"]
-    if "weight" in df.columns:
-        cols_to_keep.append("weight")
-    df = df[cols_to_keep]
-    df = df.dropna(subset=["interaction", "source", "target"])
 
+    if "weight" in df.columns:
+        df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
+        cols_to_keep.append("weight")
+
+    df = df[cols_to_keep]
+    df = df.dropna(subset=["source", "interaction", "target"])
+    df = df[
+        (df["source"] != "")
+        & (df["target"] != "")
+        & (df["source"].str.lower() != "nan")
+        & (df["target"].str.lower() != "nan")
+    ]
+    df["interaction"] = df["interaction"].astype(int)
+    df = df.drop_duplicates().reset_index(drop=True)
     return df
 
 
@@ -262,14 +315,6 @@ def compute_network_weights(
     weight_type: WeightType = WeightType.UNIFORM,
 ) -> pd.DataFrame:
     print(f"Computing weights using strategy: {weight_type.value}")
-
-    if weight_type == WeightType.UNIFORM:
-        print("   Uniform weights: using interaction as weight (no overlap filtering).")
-        net = prior_network.copy()
-        net["weight"] = net["interaction"]
-        net = net[["source", "interaction", "target", "weight"]].fillna(0.0)
-        print("   Weights computed successfully.")
-        return net
 
     initial_edges = len(prior_network)
     mask = prior_network["target"].isin(set(adata.var_names))
@@ -281,7 +326,9 @@ def compute_network_weights(
     else:
         coverage_pct = 0.0
 
-    print(f"   Network Overlap: {final_edges}/{initial_edges} edges ({coverage_pct:.2f}%) target genes present in dataset.")
+    print(
+        f"   Network Overlap: {final_edges}/{initial_edges} edges ({coverage_pct:.2f}%) target genes present in dataset."
+    )
 
     if net.empty:
         adata_examples = list(adata.var_names[:5])
@@ -294,7 +341,11 @@ def compute_network_weights(
         )
         raise ValueError(error_msg)
 
-    if weight_type == WeightType.CORRELATION:
+    if weight_type == WeightType.UNIFORM:
+        print("   Uniform weights: assigning magnitude 1 to every edge.")
+        net["weight"] = 1.0
+
+    elif weight_type == WeightType.CORRELATION:
         print("   Calculating Spearman correlations (TF mRNA vs Target mRNA)...")
         tf_target_corr = {}
         unique_tfs = net["source"].unique()
@@ -303,27 +354,40 @@ def compute_network_weights(
             if tf not in adata.var_names:
                 continue
 
-            tf_vec = adata[:, tf].X.toarray().flatten() if issparse(adata[:, tf].X) else adata[:, tf].X.flatten()
+            tf_vec = (
+                adata[:, tf].X.toarray().flatten()
+                if issparse(adata[:, tf].X)
+                else adata[:, tf].X.flatten()
+            )
             targets = net.loc[net["source"] == tf, "target"].unique()
 
-            target_mat = adata[:, targets].X.toarray() if issparse(adata[:, targets].X) else adata[:, targets].X
+            target_mat = (
+                adata[:, targets].X.toarray()
+                if issparse(adata[:, targets].X)
+                else adata[:, targets].X
+            )
 
             df_temp = pd.DataFrame(target_mat, columns=targets)
             corrs = df_temp.corrwith(pd.Series(tf_vec), method="spearman")
             tf_target_corr[tf] = corrs.to_dict()
 
-        net["weight"] = net.apply(
+        correlations = net.apply(
             lambda row: tf_target_corr.get(row["source"], {}).get(row["target"], 0.0),
             axis=1,
         )
+        correlations = pd.to_numeric(correlations, errors="coerce").fillna(0.0)
+
+        # Replace the prior direction with sign(rho). A zero magnitude removes undefined/zero correlations.
+        nonzero = correlations != 0
+        net.loc[nonzero, "interaction"] = np.sign(correlations.loc[nonzero]).astype(int)
+        net["weight"] = correlations.abs()
 
     elif weight_type == WeightType.SPECIFICITY:
         print("   Calculating specificity weights (1 / TF_count per gene)...")
         target_counts = net.groupby("target")["source"].transform("count")
         net["weight"] = 1.0 / target_counts
-        net["weight"] = net["weight"] * net["interaction"]
 
-    elif weight_type == WeightType.NON_ZERO_RATE:
+    elif weight_type == WeightType.NONZERORATE:
         print("   Calculating nonzero rate weights...")
         n_cells = adata.n_obs
         if issparse(adata.X):
@@ -331,18 +395,30 @@ def compute_network_weights(
         else:
             detection_rates = (adata.X > 0).sum(axis=0) / n_cells
         gene_reliability_map = dict(zip(adata.var_names, detection_rates))
-        net["weight"] = net["target"].map(gene_reliability_map) * net["interaction"]
+        net["weight"] = net["target"].map(gene_reliability_map)
 
     elif weight_type == WeightType.EXISTING:
         if "weight" not in net.columns:
-            print("'weight' column not found in priors. Falling back to Uniform weights.")
+            print(
+                "'weight' column not found in priors. Falling back to Uniform weights."
+            )
             net["weight"] = 1.0
         else:
             net["weight"] = net["weight"].abs().fillna(1.0)
     else:
         raise ValueError(f"Unknown weight type: {weight_type}")
 
-    net = net[["source", "interaction", "target", "weight"]].fillna(0.0)
+    net = net[["source", "interaction", "target", "weight"]].copy()
+    net["interaction"] = pd.to_numeric(net["interaction"], errors="raise")
+    net["weight"] = pd.to_numeric(net["weight"], errors="coerce").fillna(0.0)
+
+    if (~net["interaction"].isin((-1, 1))).any():
+        raise ValueError("Network interactions must be -1 or +1.")
+    if (~np.isfinite(net["weight"])).any() or (net["weight"] < 0).any():
+        raise ValueError("Network weight magnitudes must be finite and non-negative.")
+
+    net["interaction"] = net["interaction"].astype(int)
+    net["weight"] = net["weight"].astype(float)
     print("   Weights computed successfully.")
     return net
 
@@ -368,22 +444,35 @@ def set_publication_style():
 
 
 def load_adata_files_with_params(prior_type: str) -> Dict[str, dict]:
-    prior_file_path = os.path.join(COMMON_TF_DIR, f"common_tfs_{prior_type}.tsv")
+    prior_file_path = COMMON_TF_DIR / f"common_tfs_{prior_type}.tsv"
+    if not prior_file_path.is_file():
+        raise FileNotFoundError(f"Common-TF table not found: {prior_file_path}")
     df = pd.read_csv(prior_file_path, sep="\t")
 
     adata_files_with_params = {}
+
     for _, row in df.iterrows():
-        dataset_name = row["dataset"]
-        common_tfs = ast.literal_eval(row["common_tfs"])
-        common_tfs = [str(tf).strip() for tf in common_tfs]
+        dataset_name = str(row["dataset"]).strip()
+        common_tfs_value = row["common_tfs"]
+
+        if pd.isna(common_tfs_value):
+            common_tfs = []
+        else:
+            common_tfs = [
+                tf.strip() for tf in str(common_tfs_value).split(";") if tf.strip()
+            ]
+
         adata_files_with_params[dataset_name] = {
             "is_activation": dataset_name in ACTIVATED_DATASETS,
             "common_perturbed_tfs": common_tfs,
         }
+
     return adata_files_with_params
 
 
-def get_method_key(filename: str, dataset_name: str, weight_type: str, prior_type: str) -> str:
+def get_method_key(
+    filename: str, dataset_name: str, weight_type: str, prior_type: str
+) -> str:
     lower = filename.lower()
 
     if "z-aggregate" in lower:
@@ -395,7 +484,11 @@ def get_method_key(filename: str, dataset_name: str, weight_type: str, prior_typ
     elif "zscore" in lower:
         return f"zscore_{weight_type}"
     else:
-        return filename.replace(f"{dataset_name}_", "").replace(".parquet", "").replace(f"{prior_type}_", "")
+        return (
+            filename.replace(f"{dataset_name}_", "")
+            .replace(".parquet", "")
+            .replace(f"{prior_type}_", "")
+        )
 
 
 def mann_whitney_perturbed_vs_control(
@@ -490,6 +583,7 @@ def apply_fdr_bh(
     return out
 
 
+# Delongs Test Code
 def compute_midrank(x: np.ndarray) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     order = np.argsort(x)

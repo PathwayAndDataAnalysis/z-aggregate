@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import warnings
 from pathlib import Path
 
@@ -19,7 +20,12 @@ from sklearn.metrics import (
 )
 from tqdm.auto import tqdm
 
-from utility_functions import (
+ANALYSIS_DIR = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = ANALYSIS_DIR / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from utility_functions import (  # noqa: E402
     get_single_perturbation,
     load_adata_files_with_params,
     preprocess_adata,
@@ -28,9 +34,13 @@ from utility_functions import (
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-DATASET_DIR = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data/scRNASeq")
-SCORES_DIR = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data/scores")
-OUTPUT_PLOT_DIR = Path("/hpcstor6/scratch01/k/kisan.thapa001/z_agg_data/Priors_ROC_PR_Plots")
+
+# =========================================================
+# CONFIG
+# =========================================================
+DATASET_DIR = ANALYSIS_DIR / "scRNASeq"
+SCORES_DIR = ANALYSIS_DIR / "scores"
+OUTPUT_PLOT_DIR = ANALYSIS_DIR / "results" / "Priors_ROC_plots"
 
 PRIOR_TYPES = [
     "causalpath",
@@ -69,6 +79,9 @@ SAVE_FORMAT = "svg"
 DPI = 300
 
 
+# =========================================================
+# HELPERS
+# =========================================================
 def clean_index(index) -> pd.Index:
     return pd.Index(index.astype(str)).str.strip()
 
@@ -168,6 +181,7 @@ def compute_curves(y_true: np.ndarray, y_score: np.ndarray) -> dict:
     precision, recall, _ = precision_recall_curve(y_true, y_score)
 
     baseline = float(y_true.mean())
+    ap_lift = pr_auc / baseline if baseline > 0 else np.nan
 
     return {
         "roc_auc": float(roc_auc),
@@ -177,7 +191,7 @@ def compute_curves(y_true: np.ndarray, y_score: np.ndarray) -> dict:
         "precision": precision,
         "recall": recall,
         "baseline": baseline,
-        "lift": float(pr_auc - baseline),
+        "lift": float(ap_lift),
         "n_pos": int((y_true == 1).sum()),
         "n_control": int((y_true == 0).sum()),
     }
@@ -188,6 +202,9 @@ def make_plot_directories(dataset_plot_dir: Path) -> None:
     (dataset_plot_dir / "pr").mkdir(parents=True, exist_ok=True)
 
 
+# =========================================================
+# PLOTTING
+# =========================================================
 def plot_roc(
     dataset_name: str,
     tf: str,
@@ -268,6 +285,9 @@ def plot_pr(
     plt.close()
 
 
+# =========================================================
+# TF EVALUATION
+# =========================================================
 def get_shared_cells(
     tf: str,
     selected_cells: pd.Index,
@@ -375,6 +395,9 @@ def evaluate_tf(
     return rows
 
 
+# =========================================================
+# MAIN
+# =========================================================
 def main() -> None:
     set_publication_style()
     OUTPUT_PLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -387,6 +410,11 @@ def main() -> None:
     all_rows: list[dict] = []
 
     for dataset_name in dataset_names:
+        dataset_path = DATASET_DIR / f"{dataset_name}.h5ad"
+        if not dataset_path.is_file():
+            print(f"Skipping {dataset_name}: missing {dataset_path}")
+            continue
+
         matched_tfs = get_matched_tfs(dataset_name, params_by_prior)
 
         if not matched_tfs:
