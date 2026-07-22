@@ -7,7 +7,6 @@ from scipy.sparse import issparse
 from scipy.stats import median_abs_deviation
 import logging
 from pathlib import Path
-import re
 from tqdm import tqdm
 from .WeightType import WeightType
 
@@ -367,7 +366,7 @@ def compute_network_weights(
         target_counts = net.groupby("target")["source"].transform("count")
         net["weight"] = 1.0 / target_counts
 
-    elif weight_type == WeightType.NON_ZERO_RATE:
+    elif weight_type == WeightType.NONZERORATE:
         logger.info("   Calculating nonzero rate weights...")
         n_cells = adata.n_obs
         if issparse(adata.X):

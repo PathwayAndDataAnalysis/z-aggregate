@@ -78,7 +78,7 @@ uv run z-aggregate \
   --prior-type collectri \
   --output ./results \
   --default-preprocess \
-  --weight-type Uniform \
+  --weight-type UNIFORM \
   --output-format both \
   --verbose
 ```
@@ -99,14 +99,14 @@ wget "https://zenodo.org/records/13350497/files/TianKampmann2021_CRISPRi.h5ad?do
 | `-p`, `--prior-type` | Yes | - | Prior network to use. Use a named prior such as `causalpath`, `collectri`, `dorothea`, or `ensemble`, or provide a custom file path. |
 | `-o`, `--output` | Yes | - | Directory where output files will be written. |
 | `--min-targets` | No | `5` | Minimum number of target genes required for a transcription factor to be included. |
-| `--default-preprocess` | No | Enabled | Apply adaptive default preprocessing. This is the default behavior. |
+| `--default-preprocess` | No | Enabled | Explicitly select adaptive preprocessing. This mode is already used when no preprocessing flag is supplied. |
 | `--no-preprocess` | No | Disabled | Skip preprocessing when input data are already quality controlled, normalized, and transformed. |
 | `--custom-preprocess` | No | Disabled | Apply preprocessing with explicitly supplied QC thresholds. Requires `--min-genes`, `--min-cells`, and `--max-mt-pct`. |
 | `--min-genes` | With `--custom-preprocess` | - | Minimum number of genes required per cell during fixed-threshold preprocessing. |
 | `--min-cells` | With `--custom-preprocess` | - | Minimum number of cells required per gene during fixed-threshold preprocessing. |
 | `--max-mt-pct` | With `--custom-preprocess` | - | Maximum mitochondrial read percentage allowed during fixed-threshold preprocessing. |
-| `--weight-type` | No | `Uniform` | Weighting strategy for prior-network edges. |
-| `--output-format` | No | `both` | Output format: `tsv`, `csv`, `h5ad`, or `both`. With `both`, table files and an AnnData file are written. |
+| `--weight-type` | No | `UNIFORM` | Edge-weighting strategy: `UNIFORM`, `CORRELATION`, `SPECIFICITY`, `NONZERORATE`, or `EXISTING`. Values are case-sensitive. |
+| `--output-format` | No | `both` | Output format: `tsv`, `csv`, `parquet`, `h5ad`, `both`, or `all`. `both` writes TSV and H5AD; `all` writes every format. |
 | `-v`, `--verbose` | No | Disabled | Print more detailed log messages. |
 
 ## Input Data
@@ -146,29 +146,37 @@ standard columns are:
 | `source` | Transcription factor or regulator. |
 | `interaction` | Direction of regulation. Positive values indicate activation; negative values indicate inhibition. |
 | `target` | Target gene. |
-| `weight` | Optional edge weight. Used when `--weight-type Existing` is selected. |
+| `weight` | Optional edge-weight magnitude. Used when `--weight-type EXISTING` is selected. |
 
 Common alternative column names such as `tf`, `regulator`, `gene`,
 `target_gene`, `mor`, `mode`, `direction`, `effect`, and `sign` are also
 accepted.
 
-Interaction values may be numeric, or may use terms such as
-`upregulates-expression`, `downregulates-expression`, `activation`, and
-`inhibition`.
+Interaction values may be numeric, or may use `upregulates-expression`,
+`downregulates-expression`, `upregulates`, and `downregulates`. Values are
+reduced to their sign, and zero or unrecognized values are discarded.
 
 ## Preprocessing
 
-Adaptive default preprocessing runs unless `--custom-preprocess` or
-`--no-preprocess` is supplied. `--default-preprocess` may be used to state the
-default mode explicitly. The adaptive workflow:
+Adaptive preprocessing is the default, including when none of the three
+preprocessing mode flags is supplied. `--default-preprocess` simply makes that
+choice explicit. It runs the following pipeline on a copy of the loaded data:
 
-1. Cell names and gene names are stripped of surrounding whitespace, and
-   duplicate gene names are made unique.
-2. Cells are filtered when they express fewer than 1% of the dataset's genes;
-   genes are filtered when they are expressed in fewer than 0.1% of cells.
-3. Mitochondrial-content filtering uses `median + 3 × MAD`, with the cutoff
-   bounded between 10% and 25%.
-4. Counts are normalized to a target sum of 10,000 and log transformed.
+1. Convert cell and gene names to strings, strip surrounding whitespace, and
+   make duplicate gene names unique. Duplicate cell and gene names are also
+   made unique when the input file is loaded.
+2. Compute `min_genes = floor(0.01 × n_genes)` from the original shape and
+   remove cells expressing fewer genes than this threshold.
+3. Compute `min_cells = floor(0.001 × n_cells)` from the original shape and
+   remove genes detected in fewer cells than this threshold.
+4. Mark mitochondrial genes using a case-insensitive `MT-` prefix and compute
+   each cell's mitochondrial count percentage.
+5. Set the mitochondrial cutoff to `median + 3 × MAD`, where MAD uses the
+   normal-consistency scale factor, then clamp the cutoff to the range 10–25%.
+   Keep cells whose mitochondrial percentage is strictly below the cutoff.
+6. Normalize each cell to a total count of 10,000 and apply `log1p`.
+
+The CLI does not scale genes to unit variance after this pipeline.
 
 To choose fixed QC thresholds instead, use `--custom-preprocess` and provide all
 three required values:
@@ -184,20 +192,31 @@ uv run z-aggregate \
   --max-mt-pct 20
 ```
 
+Custom preprocessing uses the supplied filtering and mitochondrial thresholds,
+then performs the same total-count normalization and `log1p` transformation.
+All three threshold options must be provided together and cannot be combined
+with `--default-preprocess` or `--no-preprocess`.
+
 Use `--no-preprocess` when the dataset has already been quality controlled,
-normalized, and transformed.
+normalized, and transformed. This avoids filtering, mitochondrial QC,
+renormalization, and another log transformation.
 
 ## Weighting Strategies
 
-Choose the edge-weighting method with `--weight-type`.
+Choose the edge-weighting method with `--weight-type`. CLI values are uppercase
+and case-sensitive. Regulatory direction is stored in `interaction` as `-1` or
+`+1`, while `weight` is a non-negative magnitude; z-aggregate multiplies the
+two when constructing its signed network.
 
 | Value | Description |
 | --- | --- |
-| `Uniform` | Assigns a positive weight of 1 to all prior edges. |
-| `Correlation` | Uses absolute Spearman correlation between transcription factor expression and target-gene expression. Replaces the existing interaction by the sign of the correlation. |
-| `Specificity` | Weights each target by `1 / number of TFs regulating that target`, giving lower weight to broadly regulated targets. |
-| `NonzeroRate` | Weights each target by its detection rate in the dataset. |
-| `Existing` | Uses the `weight` column from the prior network, if present. |
+| `UNIFORM` | Assigns magnitude 1 to every edge and preserves the prior interaction sign. |
+| `CORRELATION` | Uses absolute Spearman TF–target correlation as the magnitude and replaces the interaction sign with the sign of a nonzero correlation. Missing, undefined, or zero correlations receive magnitude 0. |
+| `SPECIFICITY` | Uses `1 / number of TFs regulating the target` as the magnitude and preserves the prior interaction sign. |
+| `NONZERORATE` | Uses the fraction of cells in which the target's processed expression is greater than zero and preserves the prior interaction sign. |
+| `EXISTING` | Uses the absolute value of the prior's `weight` column and preserves the interaction sign. If the column is absent, it falls back to uniform magnitudes; missing entries use magnitude 1. |
+
+Edges with magnitude 0 are removed before scoring.
 
 ## Output Files
 
@@ -205,12 +224,12 @@ Output files are written to the directory given by `--output`.
 
 For table output, `z-aggregate` writes:
 
-- `<dataset>_<prior>_z-aggregate_scores.<format>`
-- `<dataset>_<prior>_z-aggregate_pvalues.<format>`
+- `<dataset>_z-aggregate_<prior>_<WEIGHT>.<format>` for activity scores
+- `<dataset>_z-aggregate_<prior>_<WEIGHT>_pvalues.<format>` for p-values
 
 For AnnData output, it writes:
 
-- `<dataset>_z-aggregate_results.h5ad`
+- `<dataset>_z-aggregate_<prior>_<WEIGHT>_results.h5ad`
 
 The AnnData output contains the activity scores in `.obsm["z-aggregate_scores"]`
 and p-values in `.obsm["z-aggregate_pvalues"]`.
