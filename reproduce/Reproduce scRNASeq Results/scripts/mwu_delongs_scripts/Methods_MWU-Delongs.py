@@ -63,7 +63,6 @@ MWU_COLS = [
 DELONG_COLS = [
     "Dataset",
     "TF",
-    "Mode",
     "Top_Method",
     "Top_ROC_AUC",
     "Top_MWU_Adjusted_P_Value",

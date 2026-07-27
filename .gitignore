@@ -40,6 +40,7 @@ htmlcov/
 *.feather
 *.parquet
 
+
 # Local output folders: ignore files, keep directories
 result/**/*
 !result/**/
@@ -72,7 +73,3 @@ reproduce/Reproduce scRNASeq Results/results/**/*
 reproduce/Reproduce Simulated Results/simulated_data/**/*
 !reproduce/Reproduce Simulated Results/simulated_data/**/
 !reproduce/Reproduce Simulated Results/simulated_data/**/.gitkeep
-
-reproduce/Reproduce Simulated Results/illustrations/**/*
-!reproduce/Reproduce Simulated Results/illustrations/**/
-!reproduce/Reproduce Simulated Results/illustrations/**/.gitkeep
