@@ -149,128 +149,44 @@ def _run_preprocessing(
 
 
 def read_prior_network_file(prior_type: str) -> pd.DataFrame:
-    """
-    Load prior network from local files.
-
-    Supported:
-      - causalpath
-      - collectri
-      - dorothea
-      - ensemble
-      - custom file path
-
-    Expected output:
-      source | interaction | target
-    """
-
-    data_dir = Path("data")
-    prior_files = {
-        "causalpath": data_dir / "causalpath.tsv",
-        "collectri": data_dir / "collectri.tsv",
-        "dorothea": data_dir / "dorothea.tsv",
-        "ensemble": data_dir / "ensemble.tsv",
-    }
-
-    if prior_type in prior_files:
-        prior_file = prior_files[prior_type]
-    elif os.path.exists(prior_type):
-        prior_file = Path(prior_type)
-    else:
-        raise ValueError(
-            f"Unsupported prior_type: {prior_type}. "
-            f"Use causalpath, collectri, dorothea, ensemble, or provide a valid file path."
-        )
-
-    sep = "\t" if prior_file.suffix.lower() in [".tsv", ".txt"] else ","
-
-    with open(prior_file, "r") as f:
-        first_line = f.readline().lower().strip()
-
-    has_header = ("source" in first_line and "target" in first_line) or (
-        "tf" in first_line and "gene" in first_line
+    """Read a headered TSV/CSV prior with an optional weight column."""
+    bundled = {"causalpath", "collectri", "dorothea", "ensemble"}
+    prior_file = (
+        Path(__file__).resolve().parents[1] / "data" / f"{prior_type}.tsv"
+        if prior_type in bundled
+        else Path(prior_type)
     )
+    if not prior_file.is_file():
+        raise ValueError(f"Unsupported prior type or missing file: {prior_type}")
 
-    if has_header:
-        df = pd.read_csv(prior_file, sep=sep)
-        df.columns = (
-            df.columns.astype(str)
-            .str.lower()
-            .str.strip()
-            .str.replace(" ", "_", regex=False)
-        )
+    sep = "\t" if prior_file.suffix.lower() in {".tsv", ".txt"} else ","
+    df = pd.read_csv(prior_file, sep=sep)
+    required = ["source", "interaction", "target"]
+    missing = set(required) - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing prior columns: {sorted(missing)}")
 
-        df = df.rename(
-            columns={
-                "tf": "source",
-                "regulator": "source",
-                "gene": "target",
-                "target_gene": "target",
-                "mor": "interaction",
-                "mode": "interaction",
-                "direction": "interaction",
-                "effect": "interaction",
-                "sign": "interaction",
-            }
-        )
-        if "interaction" not in df.columns and "weight" in df.columns:
-            df = df.rename(columns={"weight": "interaction"})
-
-    else:
-        df = pd.read_csv(prior_file, sep=sep, header=None)
-        if df.shape[1] == 3:
-            df.columns = ["source", "interaction", "target"]
-        elif df.shape[1] >= 4:
-            df = df.iloc[:, :4]
-            df.columns = ["source", "interaction", "target", "weight"]
-        else:
-            raise ValueError(
-                f"Unexpected prior file format. Expected 3 or 4 columns, got {df.shape[1]}."
-            )
-
-    required_cols = {"source", "interaction", "target"}
-    if not required_cols.issubset(df.columns):
-        raise ValueError(f"Missing required columns. Found columns: {list(df.columns)}")
-
-    interaction_map = {
-        "upregulates-expression": 1,
-        "downregulates-expression": -1,
-        "upregulates": 1,
-        "downregulates": -1,
+    columns = required + (["weight"] if "weight" in df else [])
+    df = df[columns].copy()
+    signs = {
+        "upregulates-expression": "1",
+        "downregulates-expression": "-1",
+        "upregulates": "1",
+        "downregulates": "-1",
     }
-
-    interaction = df["interaction"]
-
-    if interaction.dtype == "object":
-        interaction = (
-            interaction.astype(str).str.lower().str.strip().replace(interaction_map)
-        )
-
-    interaction = pd.to_numeric(interaction, errors="coerce")
-    interaction = np.sign(interaction)
-    interaction = pd.Series(interaction, index=df.index).replace(0, np.nan)
-
-    df["interaction"] = interaction
-
-    df["source"] = df["source"].astype(str).str.strip()
-    df["target"] = df["target"].astype(str).str.strip()
-
-    cols_to_keep = ["source", "interaction", "target"]
-
-    if "weight" in df.columns:
+    interaction = df["interaction"].astype("string").str.strip().str.lower()
+    df["interaction"] = np.sign(
+        pd.to_numeric(interaction.replace(signs), errors="coerce")
+    )
+    for column in ("source", "target"):
+        df[column] = df[column].astype("string").str.strip()
+    if "weight" in df:
         df["weight"] = pd.to_numeric(df["weight"], errors="coerce")
-        cols_to_keep.append("weight")
 
-    df = df[cols_to_keep]
-    df = df.dropna(subset=["source", "interaction", "target"])
-    df = df[
-        (df["source"] != "")
-        & (df["target"] != "")
-        & (df["source"].str.lower() != "nan")
-        & (df["target"].str.lower() != "nan")
-    ]
+    df = df.dropna(subset=required)
+    df = df[(df["source"] != "") & (df["target"] != "") & (df["interaction"] != 0)]
     df["interaction"] = df["interaction"].astype(int)
-    df = df.drop_duplicates().reset_index(drop=True)
-    return df
+    return df.drop_duplicates().reset_index(drop=True)
 
 
 def _spearman_correlations(
