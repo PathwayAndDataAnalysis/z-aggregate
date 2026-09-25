@@ -1,13 +1,16 @@
+import logging
 import os
-import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 import scanpy as sc
 from anndata import AnnData
 from scipy.sparse import issparse
-from scipy.stats import median_abs_deviation
-import logging
-from pathlib import Path
+from scipy.stats import median_abs_deviation, rankdata
 from tqdm import tqdm
+
 from .WeightType import WeightType
 
 logger = logging.getLogger(__name__)
@@ -78,24 +81,6 @@ def preprocess_adata(
             "and max_mt_pct."
         )
 
-    return _preprocess_with_fixed_thresholds(
-        adata,
-        do_scale=do_scale,
-        min_genes=min_genes,
-        min_cells=min_cells,
-        max_mt_pct=max_mt_pct,
-    )
-
-
-def _preprocess_with_fixed_thresholds(
-    adata: AnnData,
-    *,
-    do_scale: bool,
-    min_genes: int,
-    min_cells: int,
-    max_mt_pct: float,
-) -> AnnData:
-    """Apply preprocessing with explicitly supplied QC thresholds."""
     return _run_preprocessing(
         adata,
         min_genes=min_genes,
@@ -288,11 +273,92 @@ def read_prior_network_file(prior_type: str) -> pd.DataFrame:
     return df
 
 
+def _spearman_correlations(
+    adata: AnnData, net: pd.DataFrame, n_jobs: int | None
+) -> pd.Series:
+    """Compute pairwise-complete TF-target correlations in network row order."""
+    matrix = adata.X.tocsc(copy=False) if issparse(adata.X) else adata.X
+    gene_positions = {gene: i for i, gene in enumerate(adata.var_names)}
+    tf_targets = net.groupby("source", sort=False)["target"].unique()
+    workers = min(n_jobs or os.cpu_count() or 1, len(tf_targets))
+    logger.info("   Correlating %s TFs with %s workers.", len(tf_targets), workers)
+
+    def gene_values(gene: str) -> np.ndarray:
+        column = matrix[:, gene_positions[gene]]
+        return np.asarray(column.toarray() if issparse(column) else column).ravel()
+
+    def correlate_tf(item: tuple[str, np.ndarray]) -> tuple[str, dict[str, float]]:
+        tf, targets = item
+        if tf not in gene_positions:
+            return tf, {}
+
+        tf_values = gene_values(tf)
+        tf_finite = np.isfinite(tf_values)
+        tf_ranks = rankdata(tf_values) if tf_finite.all() else None
+        tf_centered = tf_ranks - tf_ranks.mean() if tf_ranks is not None else None
+        tf_sum_sq = float(np.sum(tf_centered**2)) if tf_centered is not None else 0.0
+        result = {}
+
+        for target in targets:
+            target_values = gene_values(target)
+            valid = tf_finite & np.isfinite(target_values)
+            if valid.sum() < 2:
+                result[target] = 0.0
+                continue
+
+            if valid.all():
+                x_centered = tf_centered
+                x_sum_sq = tf_sum_sq
+            else:
+                x_ranks = rankdata(tf_values[valid])
+                x_centered = x_ranks - x_ranks.mean()
+                x_sum_sq = float(np.sum(x_centered**2))
+
+            y_ranks = rankdata(target_values[valid])
+            y_centered = y_ranks - y_ranks.mean()
+            y_sum_sq = float(np.sum(y_centered**2))
+            denominator = np.sqrt(x_sum_sq * y_sum_sq)
+            result[target] = (
+                float(np.clip(np.sum(x_centered * y_centered) / denominator, -1, 1))
+                if denominator > 0
+                else 0.0
+            )
+
+        return tf, result
+
+    tf_target_corr = {}
+    if workers == 1:
+        results = map(correlate_tf, tf_targets.items())
+        for tf, corrs in tqdm(
+            results, total=len(tf_targets), desc="   Correlating TFs", unit="TF"
+        ):
+            tf_target_corr[tf] = corrs
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = executor.map(correlate_tf, tf_targets.items())
+            for tf, corrs in tqdm(
+                results, total=len(tf_targets), desc="   Correlating TFs", unit="TF"
+            ):
+                tf_target_corr[tf] = corrs
+
+    return pd.Series(
+        (
+            tf_target_corr.get(tf, {}).get(target, 0.0)
+            for tf, target in zip(net["source"], net["target"])
+        ),
+        index=net.index,
+        dtype=float,
+    )
+
+
 def compute_network_weights(
     adata: AnnData,
     prior_network: pd.DataFrame,
     weight_type: WeightType = WeightType.UNIFORM,
+    n_jobs: int | None = None,
 ) -> pd.DataFrame:
+    if n_jobs is not None and n_jobs < 1:
+        raise ValueError("n_jobs must be a positive integer or None")
     logger.info(f"Computing weights using strategy: {weight_type.value}")
 
     initial_edges = len(prior_network)
@@ -326,37 +392,8 @@ def compute_network_weights(
 
     elif weight_type == WeightType.CORRELATION:
         logger.info("   Calculating Spearman correlations (TF mRNA vs Target mRNA)...")
-        tf_target_corr = {}
-        unique_tfs = net["source"].unique()
+        correlations = _spearman_correlations(adata, net, n_jobs)
 
-        for tf in tqdm(unique_tfs, desc="   Correlating TFs", unit="TF"):
-            if tf not in adata.var_names:
-                continue
-
-            tf_vec = (
-                adata[:, tf].X.toarray().flatten()
-                if issparse(adata[:, tf].X)
-                else adata[:, tf].X.flatten()
-            )
-            targets = net.loc[net["source"] == tf, "target"].unique()
-
-            target_mat = (
-                adata[:, targets].X.toarray()
-                if issparse(adata[:, targets].X)
-                else adata[:, targets].X
-            )
-
-            df_temp = pd.DataFrame(target_mat, columns=targets)
-            corrs = df_temp.corrwith(pd.Series(tf_vec), method="spearman")
-            tf_target_corr[tf] = corrs.to_dict()
-
-        correlations = net.apply(
-            lambda row: tf_target_corr.get(row["source"], {}).get(row["target"], 0.0),
-            axis=1,
-        )
-        correlations = pd.to_numeric(correlations, errors="coerce").fillna(0.0)
-
-        # Replace the prior direction with sign(rho). A zero magnitude removes undefined/zero correlations.
         nonzero = correlations != 0
         net.loc[nonzero, "interaction"] = np.sign(correlations.loc[nonzero]).astype(int)
         net["weight"] = correlations.abs()

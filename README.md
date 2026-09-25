@@ -106,7 +106,9 @@ wget "https://zenodo.org/records/13350497/files/TianKampmann2021_CRISPRi.h5ad?do
 | `--min-cells` | With `--custom-preprocess` | - | Minimum number of cells required per gene during fixed-threshold preprocessing. |
 | `--max-mt-pct` | With `--custom-preprocess` | - | Maximum mitochondrial read percentage allowed during fixed-threshold preprocessing. |
 | `--weight-type` | No | `UNIFORM` | Edge-weighting strategy: `UNIFORM`, `CORRELATION`, `SPECIFICITY`, `NONZERORATE`, or `EXISTING`. Values are case-sensitive. |
+| `--n-jobs` | No | All available CPU cores | Workers used for correlation weights; set a positive integer to limit memory use. |
 | `--output-format` | No | `both` | Output format: `tsv`, `csv`, `parquet`, `h5ad`, `both`, or `all`. `both` writes TSV and H5AD; `all` writes every format. |
+| `--return-pvalues` | No | Disabled | Compute and save p-values alongside activity scores in the selected output format(s). |
 | `-v`, `--verbose` | No | Disabled | Print more detailed log messages. |
 
 ## Input Data
@@ -218,6 +220,11 @@ two when constructing its signed network.
 
 Edges with magnitude 0 are removed before scoring.
 
+Correlation weights are calculated across TFs in parallel. Workers share the
+expression matrix and process one target-gene vector at a time to bound memory
+use. `--n-jobs` does not affect the other weighting strategies.
+
+
 ## Output Files
 
 Output files are written to the directory given by `--output`.
@@ -225,14 +232,15 @@ Output files are written to the directory given by `--output`.
 For table output, `z-aggregate` writes:
 
 - `<dataset>_z-aggregate_<prior>_<WEIGHT>.<format>` for activity scores
-- `<dataset>_z-aggregate_<prior>_<WEIGHT>_pvalues.<format>` for p-values
+- `<dataset>_z-aggregate_<prior>_<WEIGHT>_pvalues.<format>` for p-values when `--return-pvalues` is set
 
 For AnnData output, it writes:
 
 - `<dataset>_z-aggregate_<prior>_<WEIGHT>_results.h5ad`
 
-The AnnData output contains the activity scores in `.obsm["z-aggregate_scores"]`
-and p-values in `.obsm["z-aggregate_pvalues"]`.
+The AnnData output contains activity scores in `.obsm["z-aggregate_scores"]`.
+When `--return-pvalues` is set, it also contains p-values in
+`.obsm["z-aggregate_pvalues"]`.
 
 ## Reproducing Paper Results
 

@@ -9,7 +9,12 @@ from sklearn.utils.sparsefuncs import mean_variance_axis, inplace_csr_row_scale
 logger = logging.getLogger(__name__)
 
 
-def run_z_aggregate(adata: AnnData, priors: pd.DataFrame, min_targets: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_z_aggregate(
+    adata: AnnData,
+    priors: pd.DataFrame,
+    min_targets: int,
+    return_pvalues: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     X = adata.X
 
     if issparse(X):
@@ -51,7 +56,7 @@ def run_z_aggregate(adata: AnnData, priors: pd.DataFrame, min_targets: int) -> t
 
     if len(valid_tfs) == 0:
         empty = pd.DataFrame(index=adata.obs_names)
-        return empty, empty
+        return empty, empty if return_pvalues else None
 
     pri = pri[pri["source"].isin(valid_tfs)].copy()
 
@@ -81,23 +86,32 @@ def run_z_aggregate(adata: AnnData, priors: pd.DataFrame, min_targets: int) -> t
     if issparse(term2):
         term2 = term2.toarray()
 
-    numerator = term1 - term2
+    term1 -= term2
 
     sum_sq_weights = np.asarray(W.power(2).sum(axis=0)).ravel()
     denominator = np.sqrt(np.maximum(sum_sq_weights, 1e-12))
 
-    final_z = numerator / denominator
+    term1 /= denominator
 
-    abs_z = np.abs(final_z)
-    p_values = 2 * ndtr(-abs_z)
-    p_values = np.clip(p_values, 1e-300, 1.0)
+    p_values = np.empty_like(term1)
+    np.abs(term1, out=p_values)
+    np.negative(p_values, out=p_values)
+    ndtr(p_values, out=p_values)
+    p_values *= 2
+    np.clip(p_values, 1e-300, 1.0, out=p_values)
 
-    scores = -np.log(p_values) * np.sign(final_z)
-
-    scores_df = pd.DataFrame(scores, index=adata.obs_names, columns=valid_tfs)
-    pvalues_df = pd.DataFrame(p_values, index=adata.obs_names, columns=valid_tfs)
-
-    scores_df = scores_df.astype(np.float64)
-    pvalues_df = pvalues_df.astype(np.float64)
+    pvalues_df = (
+        pd.DataFrame(
+            p_values.copy(), index=adata.obs_names, columns=valid_tfs, copy=False
+        )
+        if return_pvalues
+        else None
+    )
+    np.log(p_values, out=p_values)
+    np.negative(p_values, out=p_values)
+    np.copysign(p_values, term1, out=p_values)
+    scores_df = pd.DataFrame(
+        p_values, index=adata.obs_names, columns=valid_tfs, copy=False
+    )
 
     return scores_df, pvalues_df

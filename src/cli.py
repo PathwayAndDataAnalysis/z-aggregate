@@ -69,14 +69,30 @@ def main():
         help="Weighting strategy",
     )
     parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=None,
+        help="Parallel workers for correlation weights (default: all available CPU cores)",
+    )
+    parser.add_argument(
         "--output-format",
         choices=["tsv", "csv", "parquet", "h5ad", "both", "all"],
         default="both",
         help="Output format; 'both' writes TSV and H5AD, 'all' writes every format.",
     )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Increase output verbosity")
+    parser.add_argument(
+        "--return-pvalues",
+        action="store_true",
+        help="Compute and save p-values alongside activity scores.",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Increase output verbosity"
+    )
 
     args = parser.parse_args()
+
+    if args.n_jobs is not None and args.n_jobs < 1:
+        parser.error("--n-jobs must be a positive integer")
 
     custom_qc_values = (args.min_genes, args.min_cells, args.max_mt_pct)
     if args.preprocess_mode == "custom" and any(
@@ -124,16 +140,27 @@ def main():
     prior_fltd = priors[priors["target"].isin(set(adata.var_names))].copy()
     source_counts = prior_fltd["source"].value_counts()
     valid_sources = source_counts[source_counts >= args.min_targets].index
-    prior_fltd = prior_fltd[prior_fltd["source"].isin(valid_sources)].reset_index(drop=True)
+    prior_fltd = prior_fltd[prior_fltd["source"].isin(valid_sources)].reset_index(
+        drop=True
+    )
     # 3.2 Compute weights
     prior_fltd_wgtd = compute_network_weights(
-        adata, prior_fltd, weight_type=WeightType(args.weight_type)
+        adata,
+        prior_fltd,
+        weight_type=WeightType(args.weight_type),
+        n_jobs=args.n_jobs,
     )
 
     # 4. Run Algorithm
-    scores, pvalues = run_z_aggregate(adata, prior_fltd_wgtd, min_targets=args.min_targets)
+    scores, pvalues = run_z_aggregate(
+        adata,
+        prior_fltd_wgtd,
+        min_targets=args.min_targets,
+        return_pvalues=args.return_pvalues,
+    )
     scores.sort_index(axis=1, inplace=True)
-    pvalues.sort_index(axis=1, inplace=True)
+    if pvalues is not None:
+        pvalues.sort_index(axis=1, inplace=True)
 
     # 5. Save Results
     out_dir = Path(args.output)
@@ -167,32 +194,38 @@ def main():
         sep = "\t" if format_to_write == "tsv" else ","
         stem = f"{result_prefix}_z-aggregate_{prior_prefix}_{weight_prefix}"
         scores_file_name = out_dir / f"{stem}.{format_to_write}"
-        pvalues_file_name = out_dir / f"{stem}_pvalues.{format_to_write}"
 
         if format_to_write == "parquet":
             scores.to_parquet(scores_file_name, engine="pyarrow")
-            pvalues.to_parquet(pvalues_file_name, engine="pyarrow")
         else:
             scores.to_csv(scores_file_name, sep=sep)
-            pvalues.to_csv(pvalues_file_name, sep=sep)
 
         logging.info(
             f"Saved z-aggregate scores (cells={scores.shape[0]}, TFs={scores.shape[1]}) "
             f"to {scores_file_name}"
         )
-        logging.info(
-            f"Saved z-aggregate p-values (cells={pvalues.shape[0]}, TFs={pvalues.shape[1]}) "
-            f"to {pvalues_file_name}"
-        )
+
+        if pvalues is not None:
+            pvalues_file_name = out_dir / f"{stem}_pvalues.{format_to_write}"
+            if format_to_write == "parquet":
+                pvalues.to_parquet(pvalues_file_name, engine="pyarrow")
+            else:
+                pvalues.to_csv(pvalues_file_name, sep=sep)
+            logging.info(
+                f"Saved z-aggregate p-values (cells={pvalues.shape[0]}, TFs={pvalues.shape[1]}) "
+                f"to {pvalues_file_name}"
+            )
 
     if args.output_format in ("h5ad", "both", "all"):
         adata_out = adata.copy()
 
         score_key = "z-aggregate_scores"
-        pval_key = "z-aggregate_pvalues"
-
         adata_out.obsm[score_key] = scores
-        adata_out.obsm[pval_key] = pvalues
+        stored_keys = [score_key]
+        if pvalues is not None:
+            pval_key = "z-aggregate_pvalues"
+            adata_out.obsm[pval_key] = pvalues
+            stored_keys.append(pval_key)
 
         h5ad_filename = (
             out_dir
@@ -202,7 +235,7 @@ def main():
 
         logging.info(
             f"Saved AnnData object to {h5ad_filename}. "
-            f"Added .obsm keys: '{score_key}', '{pval_key}'"
+            f"Added .obsm keys: {', '.join(repr(key) for key in stored_keys)}"
         )
 
 
