@@ -1,31 +1,23 @@
+"""Evaluate priors independently with MWU, then compare selected priors with DeLong."""
+
 from __future__ import annotations
 
 import gc
 from pathlib import Path
-import sys
 
+import mwu_delongs_common as common
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score
 from tqdm.auto import tqdm
-
-ANALYSIS_DIR = Path(__file__).resolve().parents[2]
-SCRIPTS_DIR = ANALYSIS_DIR / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-from utility_functions import (  # noqa: E402
-    read_adata_file,
-    preprocess_adata,
-    get_single_perturbation,
+from utility_functions import (
+    apply_fdr_bh,
+    delong_roc_test,
     load_adata_files_with_params,
     mann_whitney_perturbed_vs_control,
-    bh_correct_by_method,
-    delong_roc_test,
-    apply_fdr_bh,
     save_tsv,
-    normalize_index,
 )
+
+ANALYSIS_DIR = Path(__file__).resolve().parents[2]
 
 ADATA_DIR = ANALYSIS_DIR / "scRNASeq"
 SCORES_DIR = ANALYSIS_DIR / "scores"
@@ -39,36 +31,16 @@ MWU_ALPHA = 0.1
 DELONG_ALPHA = 0.1
 MIN_PVALUE = 1e-300
 
-BASE_PRIORS = [
-    "causalpath",
-    "collectri",
-    "dorothea",
-]
-
-ALL_PRIORS = [
-    "causalpath",
-    "collectri",
-    "dorothea",
-    "ensemble",
-]
+BASE_PRIORS = ["causalpath", "collectri", "dorothea"]
+ALL_PRIORS = [*BASE_PRIORS, "ensemble"]
 
 DELONG_RUN_CONFIGS = [
     {
-        "include_ensemble": False,
-        "using_common_tfs_only": True,
-    },
-    {
-        "include_ensemble": False,
-        "using_common_tfs_only": False,
-    },
-    {
-        "include_ensemble": True,
-        "using_common_tfs_only": True,
-    },
-    {
-        "include_ensemble": True,
-        "using_common_tfs_only": False,
-    },
+        "include_ensemble": include_ensemble,
+        "using_common_tfs_only": using_common_tfs_only,
+    }
+    for include_ensemble in (False, True)
+    for using_common_tfs_only in (True, False)
 ]
 
 MWU_COLS = [
@@ -115,103 +87,22 @@ DELONG_COLS = [
 ]
 
 
-def selected_delong_priors(include_ensemble: bool) -> list[str]:
-    return ALL_PRIORS if include_ensemble else BASE_PRIORS
-
-
 def delong_run_label(include_ensemble: bool, using_common_tfs_only: bool) -> str:
     ensemble_label = "With-Ensemble" if include_ensemble else "No-Ensemble"
     tf_label = "CommonTFsOnly" if using_common_tfs_only else "AllAvailableTFs"
     return f"{ensemble_label}_{tf_label}"
 
 
-def load_params_by_prior() -> dict[str, dict]:
-    return {prior: load_adata_files_with_params(prior) for prior in ALL_PRIORS}
-
-
-def all_datasets(params_by_prior: dict[str, dict]) -> list[str]:
-    dataset_sets = [set(params_by_prior[prior]) for prior in ALL_PRIORS]
-    return sorted(set.union(*dataset_sets))
-
-
-def common_datasets(
+def dataset_names(
     params_by_prior: dict[str, dict],
     priors: list[str],
+    *,
+    common_only: bool = False,
 ) -> list[str]:
+    """Return sorted dataset names shared by all priors or available in any prior."""
     dataset_sets = [set(params_by_prior[prior]) for prior in priors]
-    return sorted(set.intersection(*dataset_sets))
-
-
-def union_datasets(
-    params_by_prior: dict[str, dict],
-    priors: list[str],
-) -> list[str]:
-    dataset_sets = [set(params_by_prior[prior]) for prior in priors]
-    return sorted(set.union(*dataset_sets))
-
-
-def delong_datasets(
-    params_by_prior: dict[str, dict],
-    priors: list[str],
-    using_common_tfs_only: bool,
-) -> list[str]:
-    if using_common_tfs_only:
-        return common_datasets(params_by_prior, priors)
-    return union_datasets(params_by_prior, priors)
-
-
-def priors_available_for_dataset(
-    dataset_name: str,
-    params_by_prior: dict[str, dict],
-    priors: list[str],
-) -> list[str]:
-    return [prior for prior in priors if dataset_name in params_by_prior[prior]]
-
-
-def matched_tfs_for_dataset(
-    dataset_name: str,
-    params_by_prior: dict[str, dict],
-    priors: list[str],
-) -> list[str]:
-    tf_sets = [set(params_by_prior[prior][dataset_name]["common_perturbed_tfs"]) for prior in priors]
-    return sorted(set.intersection(*tf_sets))
-
-
-def union_tfs_for_dataset(
-    dataset_name: str,
-    params_by_prior: dict[str, dict],
-    priors: list[str],
-) -> list[str]:
-    tf_sets = [
-        set(params_by_prior[prior][dataset_name]["common_perturbed_tfs"])
-        for prior in priors
-        if dataset_name in params_by_prior[prior]
-    ]
-
-    if not tf_sets:
-        return []
-
-    return sorted(set.union(*tf_sets))
-
-
-def common_tfs_across_all_resources_by_dataset(
-    params_by_prior: dict[str, dict],
-) -> dict[str, set[str]]:
-    """TFs present in all four prior-resource common-TF lists, by dataset."""
-    common_map: dict[str, set[str]] = {}
-
-    for dataset_name in common_datasets(params_by_prior, ALL_PRIORS):
-        tf_set = set(
-            matched_tfs_for_dataset(
-                dataset_name=dataset_name,
-                params_by_prior=params_by_prior,
-                priors=ALL_PRIORS,
-            )
-        )
-        if tf_set:
-            common_map[dataset_name] = tf_set
-
-    return common_map
+    combine = set.intersection if common_only else set.union
+    return sorted(combine(*dataset_sets))
 
 
 def filter_mwu_to_common_tfs_only(
@@ -221,11 +112,18 @@ def filter_mwu_to_common_tfs_only(
     if merged_mwu.empty:
         return pd.DataFrame(columns=MWU_COLS)
 
-    common_map = common_tfs_across_all_resources_by_dataset(params_by_prior)
-    if not common_map:
-        return pd.DataFrame(columns=MWU_COLS)
+    # Common-TF MWU output requires all four resources, even for a DeLong
+    # configuration that later excludes ensemble.
+    common_pairs = []
+    for dataset_name in dataset_names(params_by_prior, ALL_PRIORS, common_only=True):
+        tf_sets = [
+            set(params_by_prior[prior][dataset_name]["common_perturbed_tfs"])
+            for prior in ALL_PRIORS
+        ]
+        common_pairs.extend((dataset_name, tf) for tf in set.intersection(*tf_sets))
 
-    common_pairs = [(dataset_name, tf) for dataset_name, tf_set in common_map.items() for tf in tf_set]
+    if not common_pairs:
+        return pd.DataFrame(columns=MWU_COLS)
 
     common_pair_index = pd.MultiIndex.from_tuples(
         common_pairs,
@@ -240,7 +138,11 @@ def filter_mwu_to_common_tfs_only(
     if out.empty:
         return pd.DataFrame(columns=MWU_COLS)
 
-    prior_counts = out.drop_duplicates(["Dataset", "TF", "Prior"]).groupby(["Dataset", "TF"])["Prior"].nunique()
+    prior_counts = (
+        out.drop_duplicates(["Dataset", "TF", "Prior"])
+        .groupby(["Dataset", "TF"])["Prior"]
+        .nunique()
+    )
     valid_pair_index = prior_counts[prior_counts.eq(len(ALL_PRIORS))].index
 
     row_pair_index = pd.MultiIndex.from_frame(out[["Dataset", "TF"]])
@@ -251,20 +153,7 @@ def filter_mwu_to_common_tfs_only(
 
     return out[MWU_COLS].sort_values(
         ["Dataset", "Prior", "Adjusted_P_Value", "P_Value"],
-        ascending=[True, True, True, True],
     )
-
-
-def delong_tfs_for_dataset(
-    dataset_name: str,
-    params_by_prior: dict[str, dict],
-    priors: list[str],
-    using_common_tfs_only: bool,
-) -> list[str]:
-    if using_common_tfs_only:
-        return matched_tfs_for_dataset(dataset_name, params_by_prior, priors)
-
-    return union_tfs_for_dataset(dataset_name, params_by_prior, priors)
 
 
 def load_single_prior_score(
@@ -282,11 +171,7 @@ def load_single_prior_score(
         print(f"Skipping {dataset_name} [{prior}]: missing score file {path.name}")
         return None
 
-    df = pd.read_parquet(path)
-    df.index = normalize_index(df.index)
-    df.columns = normalize_index(df.columns)
-
-    return df.reindex(columns=tf_list, fill_value=np.nan)
+    return common.read_score_table(path, tf_list)
 
 
 def load_prior_scores(
@@ -315,11 +200,7 @@ def load_prior_scores(
             print(f"  Skipping {dataset_name} [{prior}]: {msg}")
             continue
 
-        df = pd.read_parquet(path)
-        df.index = normalize_index(df.index)
-        df.columns = normalize_index(df.columns)
-
-        scores[prior] = df.reindex(columns=tf_list, fill_value=np.nan)
+        scores[prior] = common.read_score_table(path, tf_list)
         loaded_paths[prior] = path
 
         print(f"  loaded {prior}: {path.name}")
@@ -345,19 +226,9 @@ def load_dataset_for_independent_mwu(
         print(f"Skipping {dataset_name}: missing {adata_path}")
         return None
 
-    adata = read_adata_file(str(adata_path))
-    adata = preprocess_adata(adata, do_scale=False)
-    adata.obs_names = normalize_index(adata.obs_names)
-
-    if "perturbation" not in adata.obs.columns:
-        print(f"Skipping {dataset_name}: missing perturbation column")
-        del adata
-        gc.collect()
+    adata = common.prepare_adata(adata_path, dataset_name)
+    if adata is None:
         return None
-
-    adata.obs["condition_clean"] = adata.obs["perturbation"].apply(get_single_perturbation)
-    adata = adata[adata.obs["condition_clean"].notna()].copy()
-    adata.obs["condition_clean"] = adata.obs["condition_clean"].astype(str).str.strip()
 
     condition_clean = adata.obs["condition_clean"].astype(str).str.strip().copy()
 
@@ -408,11 +279,7 @@ def load_dataset_for_delong(
         print(f"Skipping {dataset_name}: missing {adata_path}")
         return None
 
-    available_priors = priors_available_for_dataset(
-        dataset_name=dataset_name,
-        params_by_prior=params_by_prior,
-        priors=priors,
-    )
+    available_priors = [prior for prior in priors if dataset_name in params_by_prior[prior]]
 
     if using_common_tfs_only and len(available_priors) != len(priors):
         missing = sorted(set(priors) - set(available_priors))
@@ -423,12 +290,12 @@ def load_dataset_for_delong(
         print(f"Skipping {dataset_name}: no selected DeLong priors available")
         return None
 
-    tf_list = delong_tfs_for_dataset(
-        dataset_name=dataset_name,
-        params_by_prior=params_by_prior,
-        priors=priors if using_common_tfs_only else available_priors,
-        using_common_tfs_only=using_common_tfs_only,
-    )
+    tf_sets = [
+        set(params_by_prior[prior][dataset_name]["common_perturbed_tfs"])
+        for prior in available_priors
+    ]
+    combine = set.intersection if using_common_tfs_only else set.union
+    tf_list = sorted(combine(*tf_sets))
 
     if not tf_list:
         tf_msg = "common" if using_common_tfs_only else "available"
@@ -438,19 +305,9 @@ def load_dataset_for_delong(
     ref_prior = available_priors[0]
     is_activation = bool(params_by_prior[ref_prior][dataset_name]["is_activation"])
 
-    adata = read_adata_file(str(adata_path))
-    adata = preprocess_adata(adata, do_scale=False)
-    adata.obs_names = normalize_index(adata.obs_names)
-
-    if "perturbation" not in adata.obs.columns:
-        print(f"Skipping {dataset_name}: missing perturbation column")
-        del adata
-        gc.collect()
+    adata = common.prepare_adata(adata_path, dataset_name)
+    if adata is None:
         return None
-
-    adata.obs["condition_clean"] = adata.obs["perturbation"].apply(get_single_perturbation)
-    adata = adata[adata.obs["condition_clean"].notna()].copy()
-    adata.obs["condition_clean"] = adata.obs["condition_clean"].astype(str).str.strip()
 
     score_priors = priors if using_common_tfs_only else available_priors
 
@@ -529,26 +386,13 @@ def compute_mwu_for_dataset(
                 }
             )
 
-    if not rows:
-        return pd.DataFrame(columns=MWU_COLS)
-
-    df = pd.DataFrame(rows)
-
-    df = bh_correct_by_method(
-        df,
-        methods=list(prior_scores.keys()),
+    return common.correct_mwu(
+        rows,
+        groups=list(prior_scores),
+        group_col="Prior",
+        columns=MWU_COLS,
         alpha=MWU_ALPHA,
-        method_col="Prior",
         min_pvalue=MIN_PVALUE,
-    )
-
-    missing = [col for col in MWU_COLS if col not in df.columns]
-    if missing:
-        raise ValueError(f"MWU output is missing columns: {missing}")
-
-    return df[MWU_COLS].sort_values(
-        ["Dataset", "Prior", "Adjusted_P_Value", "P_Value"],
-        ascending=[True, True, True, True],
     )
 
 
@@ -565,7 +409,7 @@ def compute_mwu_once(
 
     print("\nRunning MWU once for all priors.")
 
-    for dataset_name in all_datasets(params_by_prior):
+    for dataset_name in dataset_names(params_by_prior, ALL_PRIORS):
         print(f"\n{'=' * 80}\nMWU {dataset_name}\n{'=' * 80}")
 
         loaded = load_dataset_for_independent_mwu(dataset_name, params_by_prior)
@@ -592,7 +436,6 @@ def compute_mwu_once(
     if all_mwu:
         merged_mwu = pd.concat(all_mwu, ignore_index=True).sort_values(
             ["Dataset", "Prior", "Adjusted_P_Value", "P_Value"],
-            ascending=[True, True, True, True],
         )
     else:
         merged_mwu = pd.DataFrame(columns=MWU_COLS)
@@ -606,29 +449,11 @@ def compute_mwu_once(
     save_tsv(merged_mwu_common, RESULT_ROOT / "MWU_merged_CommonTFsOnly.tsv")
 
     mwu_common_by_dataset = {
-        dataset_name: dataset_df.copy() for dataset_name, dataset_df in merged_mwu_common.groupby("Dataset", sort=False)
+        dataset_name: dataset_df.copy()
+        for dataset_name, dataset_df in merged_mwu_common.groupby("Dataset", sort=False)
     }
 
     return mwu_by_dataset, merged_mwu, mwu_common_by_dataset, merged_mwu_common
-
-
-def build_score_matrix(
-    tf: str,
-    eval_cells: pd.Index,
-    prior_scores: dict[str, pd.DataFrame],
-) -> pd.DataFrame:
-    score_mat = pd.DataFrame(index=eval_cells)
-
-    for prior, df_scores in prior_scores.items():
-        if tf not in df_scores.columns:
-            continue
-
-        score_mat[prior] = pd.to_numeric(
-            df_scores.loc[eval_cells, tf],
-            errors="coerce",
-        )
-
-    return score_mat.dropna(axis=1, how="all").dropna(axis=0, how="any")
 
 
 def get_mwu_value(
@@ -657,48 +482,6 @@ def get_mwu_significant(
     return bool(value)
 
 
-def add_single_available_row(
-    rows: list[dict],
-    dataset_name: str,
-    tf: str,
-    prior_result: dict,
-    mwu_lookup: pd.DataFrame,
-    sig_count_by_tf: dict,
-    y: np.ndarray,
-) -> None:
-    prior = prior_result["prior"]
-    top_key = (dataset_name, tf, prior)
-
-    rows.append(
-        {
-            "Dataset": dataset_name,
-            "TF": tf,
-            "Comparison_Type": "single_available_significant",
-            "N_Available_Priors": 1,
-            "N_MWU_Significant_Options": int(sig_count_by_tf.get((dataset_name, tf), 0)),
-            "Top_Prior": prior,
-            "Top_ROC_AUC": prior_result["auc"],
-            "Top_MWU_Adjusted_P_Value": get_mwu_value(
-                mwu_lookup,
-                top_key,
-                "Adjusted_P_Value",
-                np.nan,
-            ),
-            "Top_MWU_Significant_FDR_BH": True,
-            "Top_N_Cells": int(len(y)),
-            "Top_N_Pos": int(np.sum(y)),
-            "Top_N_Control": int(len(y) - np.sum(y)),
-            "Second_Prior": np.nan,
-            "Second_ROC_AUC": np.nan,
-            "Second_MWU_Adjusted_P_Value": np.nan,
-            "Second_MWU_Significant_FDR_BH": False,
-            "AUC_Diff": np.nan,
-            "DeLong_Z": np.nan,
-            "DeLong_P_Value": np.nan,
-        }
-    )
-
-
 def compute_delong_top2_for_dataset(
     dataset_name: str,
     tf_list: list[str],
@@ -721,7 +504,9 @@ def compute_delong_top2_for_dataset(
     if mwu_df.empty:
         return pd.DataFrame()
 
-    mwu_lookup = mwu_df.drop_duplicates(["Dataset", "TF", "Prior"]).set_index(["Dataset", "TF", "Prior"])
+    mwu_lookup = mwu_df.drop_duplicates(["Dataset", "TF", "Prior"]).set_index(
+        ["Dataset", "TF", "Prior"]
+    )
 
     sig_count_by_tf = (
         mwu_df[mwu_df["Significant_FDR_BH"].fillna(False).astype(bool)]
@@ -734,10 +519,10 @@ def compute_delong_top2_for_dataset(
     candidate_tfs = sorted(set(tf_list) & set(condition_clean.unique()) & mwu_candidate_tfs)
     rows: list[dict] = []
 
-    allow_single_available = not using_common_tfs_only
-
     for tf in tqdm(candidate_tfs, desc=f"DeLong {dataset_name} [{run_label}]"):
-        eval_cells = pd.Index(condition_clean.index[(condition_clean == tf) | (condition_clean == "control")])
+        eval_cells = pd.Index(
+            condition_clean.index[(condition_clean == tf) | (condition_clean == "control")]
+        )
 
         if len(eval_cells) == 0:
             continue
@@ -746,7 +531,7 @@ def compute_delong_top2_for_dataset(
         if y_true.nunique() < 2:
             continue
 
-        score_mat = build_score_matrix(tf, eval_cells, prior_scores)
+        score_mat = common.build_score_matrix(tf, eval_cells, prior_scores)
         if score_mat.empty:
             continue
 
@@ -763,102 +548,74 @@ def compute_delong_top2_for_dataset(
         if not is_activation:
             score_mat = -score_mat
 
-        prior_results: list[dict] = []
-
-        for prior in score_mat.columns:
-            pred = score_mat[prior].to_numpy(dtype=float)
-
-            if not np.isfinite(pred).all():
-                continue
-
-            try:
-                auc = roc_auc_score(y, pred)
-            except Exception:
-                continue
-
-            prior_results.append(
-                {
-                    "prior": prior,
-                    "auc": float(auc),
-                    "pred": pred,
-                }
-            )
-
+        prior_results = common.rank_auc_scores(y, score_mat)
         if not prior_results:
             continue
 
-        prior_results = sorted(
-            prior_results,
-            key=lambda item: item["auc"],
-            reverse=True,
-        )
-
-        if len(prior_results) == 1:
-            if not allow_single_available:
-                continue
-
-            top1 = prior_results[0]
-            top_key = (dataset_name, tf, top1["prior"])
-
-            if not get_mwu_significant(mwu_lookup, top_key):
-                continue
-
-            add_single_available_row(
-                rows=rows,
-                dataset_name=dataset_name,
-                tf=tf,
-                prior_result=top1,
-                mwu_lookup=mwu_lookup,
-                sig_count_by_tf=sig_count_by_tf,
-                y=y,
-            )
+        single_available = len(prior_results) == 1
+        if single_available and using_common_tfs_only:
             continue
 
-        top1, top2 = prior_results[0], prior_results[1]
-        top_key = (dataset_name, tf, top1["prior"])
-        second_key = (dataset_name, tf, top2["prior"])
+        top1 = prior_results[0]
+        top_key = (dataset_name, tf, top1["name"])
 
         if not get_mwu_significant(mwu_lookup, top_key):
             continue
 
-        _, _, z, p = delong_roc_test(y, top1["pred"], top2["pred"])
+        # Both cases share the top-prior fields. A single available prior
+        # retains empty comparison fields and does not run a DeLong test.
+        row = {
+            "Dataset": dataset_name,
+            "TF": tf,
+            "Comparison_Type": (
+                "single_available_significant" if single_available else "top2_delong"
+            ),
+            "N_Available_Priors": int(len(prior_results)),
+            "N_MWU_Significant_Options": int(sig_count_by_tf.get((dataset_name, tf), 0)),
+            "Top_Prior": top1["name"],
+            "Top_ROC_AUC": top1["auc"],
+            "Top_MWU_Adjusted_P_Value": get_mwu_value(
+                mwu_lookup,
+                top_key,
+                "Adjusted_P_Value",
+            ),
+            "Top_MWU_Significant_FDR_BH": True,
+            "Top_N_Cells": int(len(y)),
+            "Top_N_Pos": int(np.sum(y)),
+            "Top_N_Control": int(len(y) - np.sum(y)),
+            "Second_Prior": np.nan,
+            "Second_ROC_AUC": np.nan,
+            "Second_MWU_Adjusted_P_Value": np.nan,
+            "Second_MWU_Significant_FDR_BH": False,
+            "AUC_Diff": np.nan,
+            "DeLong_Z": np.nan,
+            "DeLong_P_Value": np.nan,
+        }
 
-        rows.append(
-            {
-                "Dataset": dataset_name,
-                "TF": tf,
-                "Comparison_Type": "top2_delong",
-                "N_Available_Priors": int(len(prior_results)),
-                "N_MWU_Significant_Options": int(sig_count_by_tf.get((dataset_name, tf), 0)),
-                "Top_Prior": top1["prior"],
-                "Top_ROC_AUC": top1["auc"],
-                "Top_MWU_Adjusted_P_Value": get_mwu_value(
-                    mwu_lookup,
-                    top_key,
-                    "Adjusted_P_Value",
-                    np.nan,
-                ),
-                "Top_MWU_Significant_FDR_BH": True,
-                "Top_N_Cells": int(len(y)),
-                "Top_N_Pos": int(np.sum(y)),
-                "Top_N_Control": int(len(y) - np.sum(y)),
-                "Second_Prior": top2["prior"],
-                "Second_ROC_AUC": top2["auc"],
-                "Second_MWU_Adjusted_P_Value": get_mwu_value(
-                    mwu_lookup,
-                    second_key,
-                    "Adjusted_P_Value",
-                    np.nan,
-                ),
-                "Second_MWU_Significant_FDR_BH": get_mwu_significant(
-                    mwu_lookup,
-                    second_key,
-                ),
-                "AUC_Diff": float(top1["auc"] - top2["auc"]),
-                "DeLong_Z": z,
-                "DeLong_P_Value": p,
-            }
-        )
+        if not single_available:
+            top2 = prior_results[1]
+            second_key = (dataset_name, tf, top2["name"])
+            _, _, z, p = delong_roc_test(y, top1["pred"], top2["pred"])
+            row.update(
+                {
+                    "Second_Prior": top2["name"],
+                    "Second_ROC_AUC": top2["auc"],
+                    "Second_MWU_Adjusted_P_Value": get_mwu_value(
+                        mwu_lookup,
+                        second_key,
+                        "Adjusted_P_Value",
+                    ),
+                    "Second_MWU_Significant_FDR_BH": get_mwu_significant(
+                        mwu_lookup,
+                        second_key,
+                    ),
+                    "AUC_Diff": float(top1["auc"] - top2["auc"]),
+                    "DeLong_Z": z,
+                    "DeLong_P_Value": p,
+                }
+            )
+
+        rows.append(row)
 
     return pd.DataFrame(rows)
 
@@ -880,13 +637,19 @@ def correct_delong_fdr(dataset_df: pd.DataFrame) -> pd.DataFrame:
             alpha=DELONG_ALPHA,
         )
 
-        dataset_df.loc[tested_mask, "DeLong_P_Value_FDR_BH"] = corrected["DeLong_P_Value_FDR_BH"].to_numpy()
+        dataset_df.loc[tested_mask, "DeLong_P_Value_FDR_BH"] = corrected[
+            "DeLong_P_Value_FDR_BH"
+        ].to_numpy()
 
-        dataset_df.loc[tested_mask, "DeLong_Significant_FDR_BH"] = corrected["DeLong_Significant_FDR_BH"].to_numpy()
+        dataset_df.loc[tested_mask, "DeLong_Significant_FDR_BH"] = corrected[
+            "DeLong_Significant_FDR_BH"
+        ].to_numpy()
 
     single_mask = dataset_df["Comparison_Type"].eq("single_available_significant")
     dataset_df.loc[single_mask, "DeLong_Significant_FDR_BH"] = True
-    dataset_df["DeLong_Significant_FDR_BH"] = dataset_df["DeLong_Significant_FDR_BH"].fillna(False).astype(bool)
+    dataset_df["DeLong_Significant_FDR_BH"] = (
+        dataset_df["DeLong_Significant_FDR_BH"].fillna(False).astype(bool)
+    )
 
     return dataset_df
 
@@ -895,11 +658,10 @@ def correct_delong_by_dataset(delong_raw: pd.DataFrame) -> pd.DataFrame:
     if delong_raw.empty:
         return pd.DataFrame(columns=DELONG_COLS)
 
-    corrected_frames: list[pd.DataFrame] = []
-
     # Dataset-level BH correction for DeLong p-values.
-    for _, dataset_df in delong_raw.groupby("Dataset", sort=True):
-        corrected_frames.append(correct_delong_fdr(dataset_df))
+    corrected_frames = [
+        correct_delong_fdr(dataset_df) for _, dataset_df in delong_raw.groupby("Dataset", sort=True)
+    ]
 
     corrected = pd.concat(corrected_frames, ignore_index=True)
 
@@ -980,7 +742,7 @@ def run_delong_config(
     include_ensemble: bool,
     using_common_tfs_only: bool,
 ) -> pd.DataFrame:
-    delong_priors = selected_delong_priors(include_ensemble)
+    delong_priors = ALL_PRIORS if include_ensemble else BASE_PRIORS
     run_label = delong_run_label(include_ensemble, using_common_tfs_only)
 
     print(f"\n{'#' * 80}")
@@ -990,13 +752,9 @@ def run_delong_config(
 
     all_delong_raw: list[pd.DataFrame] = []
 
-    dataset_names_for_delong = delong_datasets(
-        params_by_prior=params_by_prior,
-        priors=delong_priors,
-        using_common_tfs_only=using_common_tfs_only,
-    )
-
-    for dataset_name in dataset_names_for_delong:
+    for dataset_name in dataset_names(
+        params_by_prior, delong_priors, common_only=using_common_tfs_only
+    ):
         if dataset_name not in mwu_by_dataset:
             continue
 
@@ -1065,7 +823,7 @@ def main() -> None:
             )
         )
 
-    params_by_prior = load_params_by_prior()
+    params_by_prior = {prior: load_adata_files_with_params(prior) for prior in ALL_PRIORS}
     (
         mwu_by_dataset,
         merged_mwu,
@@ -1082,7 +840,9 @@ def main() -> None:
         mwu_for_run = mwu_common_by_dataset if using_common_tfs_only else mwu_by_dataset
 
         if using_common_tfs_only and (merged_mwu_common.empty or not mwu_for_run):
-            print("No common-TF-only MWU results available. Skipping CommonTFsOnly DeLong configuration.")
+            print(
+                "No common-TF-only MWU results available. Skipping CommonTFsOnly DeLong configuration."
+            )
             continue
 
         run_delong_config(

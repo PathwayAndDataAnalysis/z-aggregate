@@ -1,8 +1,10 @@
-import os
-import numpy as np
-import pandas as pd
 import argparse
 import json
+import os
+
+import numpy as np
+import pandas as pd
+
 
 def generate_prior(
     n_genes: int,
@@ -26,9 +28,7 @@ def generate_prior(
 
     rows = []
 
-    total_targets = np.rint(
-        rng.lognormal(mean=total_mu, sigma=total_sigma, size=n_tfs)
-    ).astype(int)
+    total_targets = np.rint(rng.lognormal(mean=total_mu, sigma=total_sigma, size=n_tfs)).astype(int)
 
     total_targets = np.clip(total_targets, 1, n_genes)
 
@@ -87,14 +87,10 @@ def generate_noisy_prior(
     n_to_replace = int(round((prior_noise_percentage / 100.0) * n_edges))
 
     original_targets_by_tf = (
-        prior_df.groupby("source")["target"]
-        .apply(lambda x: set(x.astype(str)))
-        .to_dict()
+        prior_df.groupby("source")["target"].apply(lambda x: set(x.astype(str))).to_dict()
     )
 
-    blocked_targets_by_tf = {
-        tf: set(targets) for tf, targets in original_targets_by_tf.items()
-    }
+    blocked_targets_by_tf = {tf: set(targets) for tf, targets in original_targets_by_tf.items()}
 
     changed = 0
     selected_idx = rng.permutation(noisy.index.to_numpy())
@@ -408,9 +404,7 @@ if __name__ == "__main__":
     prior_save_df["interaction"] = prior_save_df["interaction"].map(interaction_map)
 
     noisy_prior_save_df = noisy_prior_df.copy()
-    noisy_prior_save_df["interaction"] = noisy_prior_save_df["interaction"].map(
-        interaction_map
-    )
+    noisy_prior_save_df["interaction"] = noisy_prior_save_df["interaction"].map(interaction_map)
 
     os.makedirs(params["output_dir"], exist_ok=True)
     prior_save_df.to_csv(
@@ -430,12 +424,5 @@ if __name__ == "__main__":
         sep="\t",
         index=True,
     )
-    gene_exp.to_csv(
-        f"{params['output_dir']}/{params['output_exp_file']}", sep="\t", index=True
-    )
+    gene_exp.to_csv(f"{params['output_dir']}/{params['output_exp_file']}", sep="\t", index=True)
     print("All files saved to:", params["output_dir"])
-
-
-
-
-
